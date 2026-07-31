@@ -1,0 +1,54 @@
+{
+  "name": "NorthGroup One",
+  "slug": "northgroup-one",
+  "version": "1.0.0",
+  "icon": "./assets/icon.png",
+  "scheme": [
+    "northgroupone",
+    "msauth.com.northgroup.northgroupone"
+  ],
+  "plugins": [
+    [
+      "expo-camera",
+      {
+        "cameraPermission": "Camera access is used to capture survey photographs, create 3D feature scans, and share photos in Job Chat."
+      }
+    ],
+    [
+      "expo-location",
+      {
+        "locationWhenInUsePermission": "Location is used to show local weather, provide the digital compass heading, and write an approximate GPS position into survey photo metadata."
+      }
+    ],
+    "expo-mail-composer",
+    [
+      "expo-image-picker",
+      {
+        "cameraPermission": "Allow NorthGroup One to take photos for survey records and Job Chat.",
+        "photosPermission": "Allow NorthGroup One to choose photos for survey records and Job Chat."
+      }
+    ],
+    [
+      "expo-media-library",
+      {
+        "photosPermission": "Allow NorthGroup One to access photos selected for survey records and Job Chat.",
+        "savePhotosPermission": "Allow NorthGroup One to save survey photos and received Job Chat photos to your library."
+      }
+    ],
+    "expo-secure-store"
+  ],
+  "ios": {
+    "bundleIdentifier": "com.northgroup.northgroupone",
+    "buildNumber": "1",
+    "supportsTablet": false,
+    "infoPlist": {
+      "UIFileSharingEnabled": true,
+      "LSSupportsOpeningDocumentsInPlace": true
+    }
+  },
+  "extra": {
+    "eas": {
+      "projectId": "bbc56b2c-44be-4250-8b7c-759a4974c9bb"
+    }
+  }
+}

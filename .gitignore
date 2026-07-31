@@ -1,0 +1,29 @@
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Native and build output
+android/
+ios/
+*.ipa
+*.apk
+*.aab
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor and operating-system state
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Local handoff and backup folders
+bup/
+tmp/
+NorthGroup-One-Photo-Gallery-Bin-Update/
