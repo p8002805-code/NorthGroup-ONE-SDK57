@@ -4,8 +4,8 @@ dist/
 web-build/
 
 # Native and build output
-android/
-ios/
+/android/
+/ios/
 *.ipa
 *.apk
 *.aab
