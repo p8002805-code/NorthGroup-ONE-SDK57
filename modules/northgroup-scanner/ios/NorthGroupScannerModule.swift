@@ -88,10 +88,12 @@ public class NorthGroupScannerModule: Module {
   public func definition() -> ModuleDefinition {
     Name("NorthGroupScanner")
 
-    Function("getCapabilities") {
+    AsyncFunction("getCapabilities") { () async -> [String: Any] in
       if #available(iOS 18.0, *) {
-        let supported = ObjectCaptureSession.isSupported
-          && PhotogrammetrySession.isSupported
+        let supported = await MainActor.run {
+          ObjectCaptureSession.isSupported
+            && PhotogrammetrySession.isSupported
+        }
         return [
           "available": supported,
           "mode": "area",

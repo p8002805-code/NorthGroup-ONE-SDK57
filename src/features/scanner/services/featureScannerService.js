@@ -5,7 +5,7 @@ const NorthGroupScanner = requireOptionalNativeModule('NorthGroupScanner');
 
 const DEVELOPMENT_BUILD_REASON = 'development-build-required';
 
-export const getFeatureScannerCapabilities = () => {
+export const getFeatureScannerCapabilities = async () => {
   if (Platform.OS !== 'ios') {
     return {
       available: false,
@@ -27,7 +27,7 @@ export const getFeatureScannerCapabilities = () => {
   }
 
   try {
-    return NorthGroupScanner.getCapabilities();
+    return await NorthGroupScanner.getCapabilities();
   } catch {
     return {
       available: false,
@@ -67,6 +67,8 @@ export const previewFeatureModel = async (modelUri) => {
 
 export const getScannerAvailabilityMessage = (capabilities) => {
   switch (capabilities?.reason) {
+    case 'checking':
+      return 'Checking this iPhone for Apple 3D scanning support…';
     case DEVELOPMENT_BUILD_REASON:
       return 'The scanner is ready in the project, but Expo Go cannot load Apple’s native 3D capture framework. Install a NorthGroup One development or TestFlight build to scan.';
     case 'ios-version-not-supported':

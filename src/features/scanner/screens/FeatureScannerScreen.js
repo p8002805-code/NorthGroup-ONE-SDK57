@@ -42,6 +42,7 @@ const bytesLabel = (bytes) => {
 
 const availabilityLabel = (capabilities) => {
   if (capabilities?.available) return 'SCANNER READY';
+  if (capabilities?.reason === 'checking') return 'CHECKING DEVICE';
   if (capabilities?.reason === 'development-build-required') return 'DEV BUILD REQUIRED';
   return 'DEVICE CHECK';
 };
@@ -54,7 +55,13 @@ export default function FeatureScannerScreen({
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const capabilities = useMemo(() => getFeatureScannerCapabilities(), []);
+  const [capabilities, setCapabilities] = useState({
+    available: false,
+    reason: 'checking',
+    minimumIOS: '18.0',
+    mode: 'area',
+    format: 'usdz',
+  });
   const [featureId, setFeatureId] = useState('');
   const [notes, setNotes] = useState('');
   const [scans, setScans] = useState([]);
@@ -71,6 +78,18 @@ export default function FeatureScannerScreen({
   useEffect(() => {
     refreshScans();
   }, [refreshScans]);
+
+  useEffect(() => {
+    let active = true;
+
+    getFeatureScannerCapabilities().then((result) => {
+      if (active) setCapabilities(result);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const startScan = useCallback(async () => {
     const cleanFeatureId = featureId.trim().toUpperCase();
