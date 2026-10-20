@@ -283,16 +283,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
   },
-    ppeRow: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  ppeRow: {
+    backgroundColor: 'rgba(9,35,60,0.94)',
+    borderRadius: 13,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
     marginTop: 10,
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E6E8EE',
+    borderColor: 'rgba(255,255,255,0.14)',
   },
 
   ppeIconCircle: {
@@ -310,29 +310,10 @@ const styles = StyleSheet.create({
   },
 
   ppeRowLabel: {
-    color: '#071D34',
+    color: '#F4F8FB',
     fontSize: 17,
     fontWeight: '800',
     flex: 1,
-  },
-  ppeCollapseHeader: {
-    minHeight: 54,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginTop: 12,
-    marginBottom: 7,
-    borderRadius: 13,
-    borderColor: '#D5E0E8',
-    backgroundColor: '#F8FAFC',
-  },
-  ppeCollapseTitle: {
-    color: NAVY,
-    fontSize: 15,
-    marginBottom: 2,
-  },
-  ppeCollapseSubtitle: {
-    color: '#687784',
-    fontSize: 10,
   },
   ppeGrid: {
     flexDirection: 'row',
@@ -341,18 +322,18 @@ const styles = StyleSheet.create({
   },
   ppeGridItem: {
     width: '31.8%',
-    minHeight: 78,
+    minHeight: 72,
     marginTop: 0,
     marginBottom: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 9,
-    borderRadius: 11,
+    paddingHorizontal: 9,
+    paddingVertical: 10,
+    borderRadius: 13,
     alignItems: 'flex-start',
     justifyContent: 'space-between',
   },
   ppeGridItemSelected: {
-    backgroundColor: '#DDF5E5',
-    borderColor: '#2D9655',
+    backgroundColor: 'rgba(45,150,85,0.24)',
+    borderColor: '#42C878',
   },
   ppeGridLabel: {
     fontSize: 12,
@@ -360,7 +341,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   ppeGridLabelSelected: {
-    color: '#145A2A',
+    color: '#A4E9BC',
   },
   ppeGridCheck: {
     alignSelf: 'flex-end',
@@ -701,6 +682,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  collapseHeaderDark: {
+    position: 'relative',
+    overflow: 'hidden',
+    minHeight: 68,
+    paddingLeft: 20,
+    paddingRight: 14,
+    paddingVertical: 12,
+    marginTop: 12,
+    marginBottom: 8,
+    borderRadius: 16,
+    borderColor: 'rgba(214,168,79,0.42)',
+    backgroundColor: 'rgba(9,35,60,0.95)',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.12,
+    shadowRadius: 7,
+    elevation: 2,
+  },
+  collapseDarkAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    backgroundColor: GOLD,
+  },
   collapseHeaderStart: {
     backgroundColor: '#CDEBD5',
     borderColor: '#238443',
@@ -780,6 +787,12 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginBottom: 4,
   },
+  collapseTitleDark: {
+    color: WHITE,
+    fontSize: 17,
+    lineHeight: 21,
+    marginBottom: 3,
+  },
   collapseTitleStart: {
     color: '#145A2A',
   },
@@ -803,6 +816,11 @@ const styles = StyleSheet.create({
     color: '#51606F',
     fontSize: 13,
     fontWeight: '700',
+  },
+  collapseSubtitleDark: {
+    color: '#AFC1D0',
+    fontSize: 12,
+    lineHeight: 16,
   },
   collapseSubtitleStart: {
     color: '#256B38',
@@ -874,74 +892,78 @@ const styles = StyleSheet.create({
   collapseArrowWorkflowCurrent: {
     color: GOLD,
   },
+  collapseChevronDark: {
+    marginLeft: 12,
+  },
   collapseContent: {
     marginBottom: 8,
   },
+  collapseContentDark: {
+    paddingHorizontal: 2,
+    marginBottom: 4,
+  },
   collapseCloseButton: {
-  minHeight: 44,
-  backgroundColor: '#F4D9D4',
-  borderRadius: 12,
-  paddingHorizontal: 16,
-  paddingVertical: 9,
-  marginTop: 12,
-  marginBottom: 4,
-  borderWidth: 1,
-  borderColor: '#C97868',
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-},
-
-collapseCloseButtonStart: {
-  backgroundColor: '#DDF1E3',
-  borderColor: '#64A875',
-},
-
-collapseCloseButtonEnd: {
-  backgroundColor: '#F4D9D4',
-  borderColor: '#C97868',
-},
-
-collapseCloseButtonText: {
-  color: '#7A2F24',
-  fontSize: 15,
-  fontWeight: '900',
-},
-
-collapseCloseButtonTextStart: {
-  color: '#1F6335',
-},
-
-collapseCloseButtonTextEnd: {
-  color: '#7A2F24',
-},
-
-collapseCloseArrow: {
-  color: '#A94737',
-  fontSize: 18,
-  fontWeight: '900',
-  paddingLeft: 10,
-},
-
-collapseCloseArrowStart: {
-  color: '#2E8B4B',
-},
-
-collapseCloseArrowEnd: {
-  color: '#A94737',
-},
-collapseCloseButtonWorkflow: {
-  backgroundColor: '#F3F6F8',
-  borderColor: 'rgba(9,35,60,0.22)',
-},
-
-collapseCloseButtonTextWorkflow: {
-  color: NAVY_2,
-},
-
-collapseCloseArrowWorkflow: {
-  color: GOLD,
-},
+    minHeight: 44,
+    backgroundColor: '#F4D9D4',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    marginTop: 12,
+    marginBottom: 4,
+    borderWidth: 1,
+    borderColor: '#C97868',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  collapseCloseButtonStart: {
+    backgroundColor: '#DDF1E3',
+    borderColor: '#64A875',
+  },
+  collapseCloseButtonEnd: {
+    backgroundColor: '#F4D9D4',
+    borderColor: '#C97868',
+  },
+  collapseCloseButtonDark: {
+    backgroundColor: 'rgba(9,35,60,0.95)',
+    borderColor: 'rgba(214,168,79,0.42)',
+  },
+  collapseCloseButtonText: {
+    color: '#7A2F24',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  collapseCloseButtonTextStart: {
+    color: '#1F6335',
+  },
+  collapseCloseButtonTextEnd: {
+    color: '#7A2F24',
+  },
+  collapseCloseButtonTextDark: {
+    color: '#F4F8FB',
+  },
+  collapseCloseArrow: {
+    color: '#A94737',
+    fontSize: 18,
+    fontWeight: '900',
+    paddingLeft: 10,
+  },
+  collapseCloseArrowStart: {
+    color: '#2E8B4B',
+  },
+  collapseCloseArrowEnd: {
+    color: '#A94737',
+  },
+  collapseCloseButtonWorkflow: {
+    backgroundColor: '#F3F6F8',
+    borderColor: 'rgba(9,35,60,0.22)',
+  },
+  collapseCloseButtonTextWorkflow: {
+    color: NAVY_2,
+  },
+  collapseCloseArrowWorkflow: {
+    color: GOLD,
+  },
   clearButtonText: {
     color: WHITE,
     fontSize: 16,

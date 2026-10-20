@@ -50,12 +50,11 @@ export default function MicrosoftSignInScreen({ busy, error, onSignIn }) {
 
       <ImageBackground
         source={require('../../../../assets/first-welcome-field-heritage.jpg')}
-        style={StyleSheet.absoluteFillObject}
+        style={styles.background}
         imageStyle={styles.backgroundImage}
         resizeMode="cover"
-      />
-
-      <View style={styles.overlay} />
+      >
+        <View style={styles.overlay} />
 
       <Animated.View
         style={[
@@ -156,6 +155,7 @@ export default function MicrosoftSignInScreen({ busy, error, onSignIn }) {
           {error ? <Text style={styles.error}>{error}</Text> : null}
         </View>
       </Animated.View>
+      </ImageBackground>
     </View>
   );
 }
@@ -164,6 +164,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: NAVY,
+  },
+
+  background: {
+    flex: 1,
+    width: '100%',
   },
 
   backgroundImage: {

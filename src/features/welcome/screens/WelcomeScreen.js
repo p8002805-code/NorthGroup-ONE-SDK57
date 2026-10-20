@@ -166,13 +166,13 @@ export default function WelcomeScreen({
         source={isFirstRun
           ? require('../../../../assets/first-welcome-field-heritage.jpg')
           : require('../../../../assets/topo-bg-vertical.png')}
-        style={StyleSheet.absoluteFillObject}
+        style={styles.background}
         imageStyle={isFirstRun
           ? styles.firstRunBackgroundImage
           : styles.backgroundImage}
         resizeMode="cover"
-      />
-      <View style={isFirstRun ? styles.firstRunOverlay : styles.overlay} />
+      >
+        <View style={isFirstRun ? styles.firstRunOverlay : styles.overlay} />
 
       <View
         style={[
@@ -278,6 +278,7 @@ export default function WelcomeScreen({
           </>
         )}
       </View>
+      </ImageBackground>
     </Pressable>
   );
 }
@@ -286,6 +287,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#061A2D',
+  },
+  background: {
+    flex: 1,
+    width: '100%',
   },
   backgroundImage: {
     opacity: 0.72,

@@ -4,7 +4,9 @@ import {
   resolveAppearanceMode,
   resolveThemeId,
 } from '../../theme/themePresets';
-import { accountStorageKey } from './accountWorkspace';
+import { accountStorageKey } from '../../services/account/accountIdentity';
+import { secureRandomId } from '../../services/security/secureRandom';
+import { resolveUserInitials } from '../../utils/userInitials';
 
 export const ACCOUNT_PROFILE_KEY = 'northgroup_user_profile';
 export const JOB_PREFERENCES_KEY = 'northgroup_job_preferences_v1';
@@ -45,14 +47,12 @@ export const normaliseProfile = (profile = {}) => {
   const nameParts = fullName ? fullName.split(/\s+/) : [];
   const firstName = String(profile.firstName || nameParts[0] || '').trim();
   const lastName = String(profile.lastName || nameParts.slice(1).join(' ') || '').trim();
-  const initials = String(
-    profile.initials
-      || [firstName, lastName]
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((part) => part[0])
-        .join('')
-  ).trim().toUpperCase().slice(0, 4);
+  const initials = resolveUserInitials({
+    firstName,
+    lastName,
+    initials: profile.initials,
+    fallback: '',
+  });
 
   // Older builds stored registration in `vehicle` and make/model in
   // `vehicleMake`. New builds use `vehicle` for make/model and `vehicleRego`
@@ -113,15 +113,15 @@ export const profileFullName = (profile) => {
 
 export const profileInitials = (profile) => {
   const clean = normaliseProfile(profile);
-  return clean.initials || [clean.firstName, clean.lastName]
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join('') || 'NG';
+  return resolveUserInitials({
+    firstName: clean.firstName,
+    lastName: clean.lastName,
+    initials: clean.initials,
+  });
 };
 
 export const createLocalUserId = () => (
-  `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+  secureRandomId('local')
 );
 
 export const isProfileSetupComplete = (profile) => {

@@ -1,10 +1,93 @@
-const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
-const PIPE_JOB_LINE = /^(\d{6}(?:-\d{3})?)\s*\|\s*([^|\s]+)\s*\|\s*(.+)$/;
-const LEGACY_JOB_LINE = /^(\d{6}(?:-\d{3})?)\s+(.+)$/;
+import {
+  GRAPH_ROOT,
+  graphCollection as sharedGraphCollection,
+  graphRequest,
+} from '../../services/sync/graphClient';
+
 const TEAMS_JOB_HISTORY_DAYS = 28;
 
 const clean = (value) => String(value || '').replace(/\r/g, '').trim();
 const unique = (values) => [...new Set(values.filter(Boolean))];
+
+const shortShiftDate = (value) => {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Brisbane', year: '2-digit', month: '2-digit', day: '2-digit',
+  }).formatToParts(date).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  const { year, month, day } = parts;
+  return `${year}${month}${day}`;
+};
+
+const oneLineInstructions = (values = []) => unique(
+  (Array.isArray(values) ? values : [values])
+    .flatMap((value) => String(value || '').split('\n'))
+    .map(clean)
+    .filter(Boolean),
+).join('/').replace(/\s*\/+\s*/g, '/');
+
+export const formatShiftBriefLine = (startDateTime, instructions = []) => {
+  const details = oneLineInstructions(instructions);
+  if (!details) return '';
+  return [shortShiftDate(startDateTime), details].filter(Boolean).join(' ');
+};
+
+const mergeBriefLines = (...values) => unique(
+  values.flatMap((value) => String(value || '').split('\n').map(clean).filter(Boolean)),
+).sort((left, right) => {
+  const leftDate = left.match(/^\d{6}\b/)?.[0] || '';
+  const rightDate = right.match(/^\d{6}\b/)?.[0] || '';
+  if (leftDate && rightDate) return leftDate.localeCompare(rightDate);
+  if (leftDate !== rightDate) return leftDate ? -1 : 1;
+  return 0;
+}).join('\n');
+
+const NON_JOB_PLACEHOLDER_PATTERNS = [
+  /^n\s*\/?\s*a(?:$|[\s|+;,:/\\-])/i,
+  /^(?:none|nil|not applicable|not available|unavailable)(?:$|[\s|+;,:/\\-])/i,
+  /^(?:(?:annual|sick|personal|long service|carer's|parental|compassionate)\s+)?leave\b/i,
+  /^(?:rdo|rostered day off|day off|rest day|off)\b/i,
+  /\bpublic holiday\b/i,
+  /^(?:qld|queensland)\b.*\b(?:holiday|labour day|show day|show holiday|ekka)\b/i,
+  /^(?:the\s+)?(?:australia day|new year's day|new years day|good friday|easter saturday|easter sunday|easter monday|anzac day|labour day|royal queensland show|ekka|king's birthday|kings birthday|queen's birthday|queens birthday|christmas day|boxing day)\b/i,
+  /^(?:holiday|no work|no shift)\b/i,
+  /^other\b/i,
+];
+
+const isNonJobPlaceholder = (value) => {
+  const normalised = clean(value)
+    .replace(/[‐‑‒–—]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/\./g, '')
+    .trim();
+  return Boolean(normalised) && NON_JOB_PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(normalised));
+};
+
+const isJobNumber = (value) => {
+  const token = clean(value).replace(/^#/, '');
+  if (!token || /^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$/.test(token)) return false;
+  return /^(?:\d+|[A-Z]{1,8}-?\d+)(?:[-/]\d+)*$/i.test(token);
+};
+
+const normaliseJobNumber = (value) => clean(value).replace(/^#/, '').toUpperCase();
+
+const stripLeadingJobLabel = (value) => {
+  let header = clean(value).replace(/^#\s*/, '');
+  const label = header.match(
+    /^(?:(?:job|project)(?:\s+(?:number|no\.?)|\s*#)?|(?:job|project)\s+number)\s*(?:[:#-]\s*|\s+(?=[A-Z]{0,8}-?\d))/i,
+  );
+  if (label) header = header.slice(label[0].length).trim();
+  return header;
+};
+
+const splitHeaderParts = (value) => {
+  const header = clean(value);
+  if (!header) return [];
+  return header
+    .split(/\s*\|\s*|\s*\+\s*|\s*;\s*|\s+[-–—]\s+|\s+\/\s+|\s*:\s*/)
+    .map(clean)
+    .filter(Boolean);
+};
 
 const teamsJobCutoff = () => {
   const cutoff = new Date();
@@ -17,29 +100,23 @@ const startsWithinImportWindow = (shift) => {
   return Number.isFinite(start) && start >= teamsJobCutoff();
 };
 
-const graphCollection = async (url, accessToken) => {
-  const values = [];
-  let nextUrl = url;
-  while (nextUrl) {
-    const response = await fetch(nextUrl, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-      },
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      const message = body?.error?.message || `Microsoft Graph request failed (${response.status}).`;
-      const error = new Error(message);
-      error.status = response.status;
-      throw error;
-    }
-    const page = await response.json();
-    values.push(...(Array.isArray(page?.value) ? page.value : []));
-    nextUrl = page?.['@odata.nextLink'] || '';
-  }
-  return values;
-};
+const teamsSyncConfig = (operation) => ({
+  feature: 'teamsShifts',
+  operation,
+});
+
+const graphCollection = (url, accessToken) => sharedGraphCollection(
+  url,
+  accessToken,
+  teamsSyncConfig('Load Teams Shifts'),
+);
+
+const graphItem = (url, accessToken) => graphRequest(
+  url,
+  accessToken,
+  {},
+  teamsSyncConfig('Load assigned employee'),
+);
 
 const shiftText = (sharedShift) => {
   const activityNames = (sharedShift?.activities || [])
@@ -52,26 +129,49 @@ const shiftText = (sharedShift) => {
   ]).join('\n');
 };
 
-const parseJobHeader = (value) => {
-  const header = clean(value);
-  const pipeMatch = header.match(PIPE_JOB_LINE);
-  if (pipeMatch) {
-    return {
-      number: pipeMatch[1].toUpperCase(),
-      name: clean(pipeMatch[2]),
-      location: clean(pipeMatch[3]),
-    };
+export const parseJobHeader = (value) => {
+  const header = stripLeadingJobLabel(value);
+  if (!header) return null;
+
+  // Shifts often contain roster placeholders rather than a field assignment.
+  // Do not create a workspace for entries such as Leave, N/A, RDO or Unavailable.
+  const firstHeaderPart = splitHeaderParts(header)[0] || header;
+  if (isNonJobPlaceholder(header) || isNonJobPlaceholder(firstHeaderPart)) return null;
+
+  if (/^\d{1,2}:\d{2}(?:\s|$)/.test(header)) return null;
+
+  let parts = splitHeaderParts(header);
+  if (!parts.length) return null;
+
+  const firstPart = parts[0] || '';
+
+  // Do not turn a date or time-only shift title into a workspace.
+  if (/^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$/.test(firstPart) || /^\d{1,2}:\d{2}$/.test(firstPart)) {
+    return null;
   }
 
-  // Keep existing published shifts working while the team moves to:
-  // Job Number | OneWordJobName | Job Location
-  const legacyMatch = header.match(LEGACY_JOB_LINE);
-  if (!legacyMatch || !clean(legacyMatch[2])) return null;
-  const legacyLocation = clean(legacyMatch[2]);
+  if (parts.length === 1) {
+    const words = parts[0].split(/\s+/).map(clean).filter(Boolean);
+    if (words.length > 1 && isJobNumber(words[0]) && !/[|+;:/]/.test(header)) {
+      // Preserve the older free-text form: 205672 Bruce Highway Upgrade.
+      const legacyText = words.slice(1).join(' ');
+      parts = [words[0], legacyText, legacyText];
+    } else if (words.length > 1) {
+      // If the first segment is not numeric, move each word forward:
+      // Broncos Suncorp -> Broncos / Suncorp / empty location.
+      parts = words;
+    }
+  }
+
+  // Every valid entry uses the first field as the visible job-number field,
+  // whether it contains digits or ordinary text such as Event or RIEGL.
+  const number = normaliseJobNumber(parts[0]);
+  if (!number) return null;
+
   return {
-    number: legacyMatch[1].toUpperCase(),
-    name: legacyLocation,
-    location: legacyLocation,
+    number,
+    name: clean(parts[1]),
+    location: clean(parts.slice(2).join(' ')),
   };
 };
 
@@ -94,7 +194,7 @@ const parsePublishedShift = (shift, team) => {
     scheduleStart: clean(shared.startDateTime),
     scheduleEnd: clean(shared.endDateTime),
     workType: instructions[0] || '',
-    details: instructions.join('\n'),
+    details: formatShiftBriefLine(shared.startDateTime, instructions),
     teamsLastSyncedAt: new Date().toISOString(),
   };
 };
@@ -115,7 +215,7 @@ const mergeParsedShifts = (parsed) => {
       scheduleStart: [current.scheduleStart, shiftJob.scheduleStart].filter(Boolean).sort()[0] || '',
       scheduleEnd: [current.scheduleEnd, shiftJob.scheduleEnd].filter(Boolean).sort().at(-1) || '',
       workType: current.workType || shiftJob.workType,
-      details: unique([current.details, shiftJob.details]).join('\n'),
+      details: mergeBriefLines(current.details, shiftJob.details),
       teamsLastSyncedAt: shiftJob.teamsLastSyncedAt,
     });
   });
@@ -126,7 +226,8 @@ const shiftJobNumber = (shift) => {
   const shared = shift?.sharedShift;
   if (!shared || shift?.isStagedForDeletion) return '';
   const firstLine = shiftText(shared).split('\n').map(clean).find(Boolean) || '';
-  return parseJobHeader(firstLine)?.number || '';
+  const header = parseJobHeader(firstLine);
+  return header?.number || '';
 };
 
 export const loadAssignedTeamsJobs = async ({ accessToken, userId }) => {
@@ -181,10 +282,44 @@ export const loadJobShiftMembers = async ({ accessToken, job }) => {
 
   const fulfilled = results.filter((result) => result.status === 'fulfilled');
   if (!fulfilled.length && results.length) throw results[0].reason;
+  const userIds = unique(fulfilled.flatMap((result) => result.value));
+  const memberResults = await Promise.allSettled(userIds.map((userId) => graphItem(
+    // User.ReadBasic.All deliberately exposes only Microsoft's basic profile
+    // fields for other employees. Do not request jobTitle here: including a
+    // full-profile-only field can make an otherwise valid basic lookup fail.
+    `${GRAPH_ROOT}/users/${encodeURIComponent(userId)}?$select=id,displayName,mail,userPrincipalName`,
+    accessToken,
+  )));
+  const directoryMembersResolved = memberResults.length === userIds.length
+    && memberResults.every((result) => result.status === 'fulfilled' && result.value?.id);
+  const directoryFailure = memberResults.find((result) => result.status === 'rejected')?.reason;
+  const directoryError = directoryFailure?.status === 403
+    ? 'Your current Microsoft sign-in is missing User.ReadBasic.All. Sign out of Microsoft, then sign in once more to receive the administrator-approved permission.'
+    : directoryFailure?.status === 401
+      ? 'Your Microsoft sign-in must be refreshed before assigned employee names can load.'
+      : directoryFailure?.message || '';
+  const membersById = new Map(
+    memberResults
+      .filter((result) => result.status === 'fulfilled' && result.value?.id)
+      .map((result) => [clean(result.value.id).toLowerCase(), result.value]),
+  );
+  const members = userIds.map((userId, index) => {
+    const user = membersById.get(clean(userId).toLowerCase());
+    return {
+      id: userId,
+      displayName: clean(user?.displayName) || `Assigned employee ${index + 1}`,
+      email: clean(user?.mail || user?.userPrincipalName),
+      jobTitle: '',
+      directoryResolved: Boolean(user?.id),
+    };
+  });
 
   return {
     jobNumber,
     teamIds,
-    userIds: unique(fulfilled.flatMap((result) => result.value)),
+    userIds,
+    members,
+    directoryMembersResolved,
+    directoryError,
   };
 };

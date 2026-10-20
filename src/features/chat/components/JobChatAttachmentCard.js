@@ -33,8 +33,36 @@ const WHITE = '#FFFFFF';
 const MUTED = '#81919D';
 const GREEN = '#54D98C';
 const RED = '#E14D4D';
+const MAX_REMEMBERED_ATTACHMENTS = 160;
+const resolvedAttachmentCache = new Map();
 
 const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+const attachmentCacheKey = (attachment, messageId = '') => [
+  clean(attachment?.chatId),
+  clean(messageId || attachment?.messageId),
+  clean(attachment?.id || attachment?.name),
+].join('::');
+
+const rememberedAttachment = (attachment, messageId = '') => {
+  const cached = resolvedAttachmentCache.get(attachmentCacheKey(attachment, messageId));
+  return cached ? { ...(attachment || {}), ...cached } : (attachment || {});
+};
+
+const rememberAttachment = (attachment, messageId = '') => {
+  if (!attachment?.localUri) return attachment;
+  const key = attachmentCacheKey(attachment, messageId);
+  if (!key) return attachment;
+  resolvedAttachmentCache.delete(key);
+  resolvedAttachmentCache.set(key, attachment);
+  if (resolvedAttachmentCache.size > MAX_REMEMBERED_ATTACHMENTS) {
+    resolvedAttachmentCache.delete(resolvedAttachmentCache.keys().next().value);
+  }
+  return attachment;
+};
+
+const forgetAttachment = (attachment, messageId = '') => {
+  resolvedAttachmentCache.delete(attachmentCacheKey(attachment, messageId));
+};
 
 export default function JobChatAttachmentCard({
   attachment,
@@ -49,7 +77,7 @@ export default function JobChatAttachmentCard({
   onRetry,
   onCancel,
 }) {
-  const [resolved, setResolved] = useState(attachment || {});
+  const [resolved, setResolved] = useState(() => rememberedAttachment(attachment, messageId));
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
   const isPhoto = isImageJobChatAttachment(resolved);
@@ -58,9 +86,19 @@ export default function JobChatAttachmentCard({
   );
 
   useEffect(() => {
-    setResolved(attachment || {});
+    setResolved((current) => {
+      const incomingKey = attachmentCacheKey(attachment, messageId);
+      const currentKey = attachmentCacheKey(current, messageId);
+      if (current?.localUri && incomingKey === currentKey) {
+        // The four-second Teams refresh returns new attachment objects. Preserve
+        // the resolved local photo URI so visible images do not flash back to a
+        // loading card every time the message list updates.
+        return rememberAttachment({ ...(attachment || {}), ...current }, messageId);
+      }
+      return rememberedAttachment(attachment, messageId);
+    });
     setLoadError('');
-  }, [attachment]);
+  }, [attachment, messageId]);
 
   const hydrate = useCallback(async ({ silent = false } = {}) => {
     if (resolved?.localUri) return resolved;
@@ -73,6 +111,7 @@ export default function JobChatAttachmentCard({
         accessToken,
         messageId,
       });
+      rememberAttachment(next, messageId);
       setResolved(next);
       setLoadError('');
       return next;
@@ -99,6 +138,12 @@ export default function JobChatAttachmentCard({
       clearTimeout(timer);
     };
   }, [hydrate, isPhoto, remote, resolved?.localUri]);
+
+  const handlePhotoLoadError = useCallback(() => {
+    forgetAttachment(resolved, messageId);
+    setResolved((current) => ({ ...current, localUri: '' }));
+    setLoadError('Refreshing photo…');
+  }, [messageId, resolved]);
 
   const openOrShare = useCallback(async () => {
     try {
@@ -213,7 +258,12 @@ export default function JobChatAttachmentCard({
           accessibilityLabel={`Open ${resolved?.name || 'Job Chat photo'}`}
         >
           {resolved?.localUri ? (
-            <Image source={{ uri: resolved.localUri }} style={styles.photo} resizeMode="cover" />
+            <Image
+              source={{ uri: resolved.localUri }}
+              style={styles.photo}
+              resizeMode="cover"
+              onError={handlePhotoLoadError}
+            />
           ) : (
             <View style={[styles.photo, styles.photoPlaceholder]}>
               {busy ? (

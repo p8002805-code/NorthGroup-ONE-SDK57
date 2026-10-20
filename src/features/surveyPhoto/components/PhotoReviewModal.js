@@ -1,10 +1,18 @@
-import React, { useEffect, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
+  Animated,
   Image,
   ImageBackground,
   Keyboard,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StatusBar,
@@ -38,8 +46,10 @@ export default function PhotoReviewModal({
   setRepeatLastType,
 }) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const isLandscape = windowWidth > windowHeight;
   const [showAllTypes, setShowAllTypes] = useState(false);
   const [showImagePreview, setShowImagePreview] = useState(false);
+  const previewDismissY = useRef(new Animated.Value(0)).current;
   const selectedType =
     imageType === "Custom" ? customType.trim() : imageType.trim();
   const canSave = Boolean(selectedType) && !saving;
@@ -50,7 +60,9 @@ export default function PhotoReviewModal({
       })
     : "—";
   const accuracy = Number(pendingShot?.location?.accuracy);
-  const gpsText = Number.isFinite(accuracy) ? `GPS ±${accuracy.toFixed(1)} m` : "No GPS";
+  const gpsText = Number.isFinite(accuracy)
+    ? `GPS ±${accuracy.toFixed(1)} m`
+    : "No GPS";
 
   useEffect(() => {
     if (!pendingShot) {
@@ -58,6 +70,61 @@ export default function PhotoReviewModal({
       setShowImagePreview(false);
     }
   }, [pendingShot]);
+
+  useEffect(() => {
+    if (!showImagePreview) previewDismissY.setValue(0);
+  }, [previewDismissY, showImagePreview]);
+
+  const closeImagePreview = useCallback(() => {
+    previewDismissY.stopAnimation();
+    previewDismissY.setValue(0);
+    setShowImagePreview(false);
+  }, [previewDismissY]);
+
+  const previewDismissResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_, gesture) =>
+          (gesture.numberActiveTouches || 1) <= 1 &&
+          gesture.dy > 10 &&
+          gesture.dy > Math.abs(gesture.dx) * 1.12,
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          (gesture.numberActiveTouches || 1) <= 1 &&
+          gesture.dy > 10 &&
+          gesture.dy > Math.abs(gesture.dx) * 1.12,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderMove: (_, gesture) => {
+          previewDismissY.setValue(Math.max(0, gesture.dy));
+        },
+        onPanResponderRelease: (_, gesture) => {
+          const shouldClose =
+            gesture.dy > 58 || (gesture.dy > 30 && gesture.vy > 0.55);
+          if (shouldClose) {
+            Animated.timing(previewDismissY, {
+              toValue: Math.max(windowHeight, 700),
+              duration: 170,
+              useNativeDriver: true,
+            }).start(closeImagePreview);
+          } else {
+            Animated.spring(previewDismissY, {
+              toValue: 0,
+              speed: 24,
+              bounciness: 5,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(previewDismissY, {
+            toValue: 0,
+            speed: 24,
+            bounciness: 5,
+            useNativeDriver: true,
+          }).start();
+        },
+      }),
+    [closeImagePreview, previewDismissY, windowHeight],
+  );
 
   const selectType = (type) => {
     setImageType(type);
@@ -69,18 +136,35 @@ export default function PhotoReviewModal({
     <Modal
       visible={Boolean(pendingShot)}
       animationType="slide"
+      supportedOrientations={["portrait", "landscape-left", "landscape-right"]}
       onRequestClose={onDiscard}
     >
       <View style={styles.classifyPage}>
-        <StatusBar barStyle="light-content" backgroundColor={NAVY} />
+        <StatusBar
+          animated
+          hidden={isLandscape}
+          barStyle="light-content"
+          backgroundColor={NAVY}
+        />
         <ImageBackground
           source={require("../../../../assets/topo-bg.png")}
-          style={[styles.classifyHeader, { paddingTop: insets.top + 7 }]}
+          style={[
+            styles.classifyHeader,
+            isLandscape && styles.classifyHeaderLandscape,
+            {
+              paddingTop: isLandscape ? 0 : insets.top + 7,
+              paddingLeft: Math.max(14, insets.left + 12),
+              paddingRight: Math.max(14, insets.right + 12),
+            },
+          ]}
           imageStyle={styles.classifyHeaderImage}
         >
           <View pointerEvents="none" style={styles.classifyHeaderShade} />
           <Pressable
-            style={styles.classifyBack}
+            style={[
+              styles.classifyBack,
+              isLandscape && styles.classifyBackLandscape,
+            ]}
             onPress={onDiscard}
             hitSlop={8}
             accessibilityRole="button"
@@ -89,11 +173,34 @@ export default function PhotoReviewModal({
             <Ionicons name="chevron-back" size={24} color={GOLD} />
             <Text style={styles.classifyBackText}>Retake</Text>
           </Pressable>
-          <View pointerEvents="none" style={styles.classifyHeaderCopy}>
+          <View
+            pointerEvents="none"
+            style={[
+              styles.classifyHeaderCopy,
+              isLandscape && styles.classifyHeaderCopyLandscape,
+              {
+                left: insets.left + (isLandscape ? 112 : 116),
+                right: insets.right + (isLandscape ? 108 : 100),
+              },
+            ]}
+          >
             <Text style={styles.classifyEyebrow}>PHOTO WORKSPACE</Text>
-            <Text style={styles.classifyTitle}>Review & classify</Text>
+            <Text
+              style={styles.classifyTitle}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.82}
+              allowFontScaling={false}
+            >
+              Review & classify
+            </Text>
           </View>
-          <View style={styles.classifyIdPill}>
+          <View
+            style={[
+              styles.classifyIdPill,
+              isLandscape && styles.classifyIdPillLandscape,
+            ]}
+          >
             <Text style={styles.classifyIdLabel}>PHOTO</Text>
             <Text style={styles.classifyIdValue}>
               #{pendingShot?.photoId || "—"}
@@ -122,7 +229,9 @@ export default function PhotoReviewModal({
               />
               <View style={styles.classifyPreviewHint}>
                 <Ionicons name="expand-outline" size={15} color={WHITE} />
-                <Text style={styles.classifyPreviewHintText}>Tap to inspect</Text>
+                <Text style={styles.classifyPreviewHintText}>
+                  Tap to inspect
+                </Text>
               </View>
             </Pressable>
           ) : null}
@@ -143,7 +252,10 @@ export default function PhotoReviewModal({
             {selectedType ? (
               <View style={styles.classifySelectedBadge}>
                 <Ionicons name="checkmark-circle" size={15} color={GOLD} />
-                <Text numberOfLines={1} style={styles.classifySelectedBadgeText}>
+                <Text
+                  numberOfLines={1}
+                  style={styles.classifySelectedBadgeText}
+                >
                   {selectedType}
                 </Text>
               </View>
@@ -251,7 +363,11 @@ export default function PhotoReviewModal({
         <View
           style={[
             styles.classifyActionDock,
-            { paddingBottom: Math.max(insets.bottom, 10) },
+            {
+              paddingBottom: Math.max(insets.bottom, 10),
+              paddingLeft: Math.max(12, insets.left + 12),
+              paddingRight: Math.max(12, insets.right + 12),
+            },
           ]}
         >
           <Pressable
@@ -363,33 +479,66 @@ export default function PhotoReviewModal({
         <Modal
           visible={showImagePreview}
           animationType="fade"
-          onRequestClose={() => setShowImagePreview(false)}
+          supportedOrientations={[
+            "portrait",
+            "landscape-left",
+            "landscape-right",
+          ]}
+          onRequestClose={closeImagePreview}
         >
           <View style={styles.classifyZoomPage}>
-            <StatusBar barStyle="light-content" backgroundColor="#000000" />
-            <ScrollView
-              style={styles.classifyZoomScroll}
-              contentContainerStyle={styles.classifyZoomContent}
-              minimumZoomScale={1}
-              maximumZoomScale={4}
-              centerContent
-              showsHorizontalScrollIndicator={false}
-              showsVerticalScrollIndicator={false}
+            <StatusBar animated hidden backgroundColor="#000000" />
+            <Animated.View
+              style={[
+                styles.classifyZoomAnimatedPage,
+                { transform: [{ translateY: previewDismissY }] },
+              ]}
+              {...previewDismissResponder.panHandlers}
             >
-              {pendingShot ? (
-                <Image
-                  source={{ uri: pendingShot.uri }}
-                  style={[
-                    styles.classifyZoomImage,
-                    { width: windowWidth, height: windowHeight },
-                  ]}
-                  resizeMode="contain"
-                />
-              ) : null}
-            </ScrollView>
+              <ScrollView
+                style={styles.classifyZoomScroll}
+                contentContainerStyle={styles.classifyZoomContent}
+                minimumZoomScale={1}
+                maximumZoomScale={4}
+                centerContent
+                showsHorizontalScrollIndicator={false}
+                showsVerticalScrollIndicator={false}
+              >
+                {pendingShot ? (
+                  <Image
+                    source={{ uri: pendingShot.uri }}
+                    style={[
+                      styles.classifyZoomImage,
+                      { width: windowWidth, height: windowHeight },
+                    ]}
+                    resizeMode="contain"
+                  />
+                ) : null}
+              </ScrollView>
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.classifyZoomGrabber,
+                  {
+                    top: Math.max(8, insets.top + 6),
+                    left: insets.left + 74,
+                    right: insets.right + 74,
+                  },
+                ]}
+              >
+                <View style={styles.classifyZoomGrabberBar} />
+              </View>
+            </Animated.View>
             <Pressable
-              style={[styles.classifyZoomClose, { top: insets.top + 10 }]}
-              onPress={() => setShowImagePreview(false)}
+              style={[
+                styles.classifyZoomClose,
+                {
+                  top: Math.max(10, insets.top + 8),
+                  right: Math.max(14, insets.right + 12),
+                },
+              ]}
+              onPress={closeImagePreview}
+              hitSlop={12}
               accessibilityRole="button"
               accessibilityLabel="Close full screen photo"
             >

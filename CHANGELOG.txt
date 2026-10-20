@@ -1,0 +1,32 @@
+NORTHGROUP ONE - SDK 57 VISUAL BUG REPAIR
+19 October 2026
+
+CHANGES
+- Updated and pinned the Expo SDK 57 package set to the current compatible patch releases, including expo-camera 57.0.6.
+- Profile setup now applies iOS keyboard avoidance and automatic keyboard insets so Vehicle Make and Vehicle Rego remain reachable.
+- Job Files now gives the SharePoint FlatList an explicit bounded layout, disables unreliable native clipping, and refreshes virtualised rows when filters or item counts change.
+- Camera preview now uses an explicitly active, full-size CameraView surface.
+- Photo Review reserves sufficient header space for Retake, the title, and Photo ID on compact iPhones.
+- Active Job now opens the workspace without the unreliable opacity/height shell transition that could leave a blank navy screen.
+- Job Hub mount state is restored correctly during development-mode effect checks.
+- Teams shift dates are formatted in Australia/Brisbane time rather than the computer's timezone.
+
+APP SWITCHER NOTE
+- Expo Go owns its iOS app-switcher snapshot. It is expected to differ from the standalone TestFlight privacy/brand snapshot; no app code was added to force Expo Go to imitate TestFlight.
+
+VALIDATION COMPLETED
+- Project parser, import graph, architecture, dependency and security checks: passed.
+- Automated tests: 146 passed, 0 failed.
+- Expo Doctor: 21/21 checks passed.
+- iOS production export: passed (1,592 modules bundled).
+
+MANUAL IPHONE TEST
+1. Run npm install, then npx expo start --go --tunnel --clear.
+2. Profile: focus both vehicle inputs on a compact iPhone; confirm each scrolls above the keyboard and values remain after dismissal.
+3. Job Files: open a folder containing files, upload one small uniquely named test file, confirm it appears once after refresh, then re-enter the screen and test All/PDFs/Images filters.
+4. Capture: confirm the live preview appears, background and foreground Expo Go once, take a photo, Retake once, then Save & Next.
+5. Review: confirm Retake, Review & classify, and Photo ID do not overlap.
+6. Dashboard: tap Active Job and confirm the complete workspace and back navigation appear for at least two jobs.
+
+OUTSTANDING RISK
+- Native camera, iOS keyboard, app lifecycle and SharePoint rendering require final confirmation on the affected physical iPhone. Automated checks cannot reproduce the iOS camera feed or the signed-in SharePoint account.

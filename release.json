@@ -1,0 +1,9 @@
+{
+  "version": "1.0.12",
+  "buildNumber": "13",
+  "releaseId": "2026.08.16-beta.13",
+  "revision": "job-app-data-folders-01",
+  "channel": "beta",
+  "releasedAt": "2026-08-16T09:00:00+10:00",
+  "summary": "Adds per-job App Data folders with safe legacy JSON discovery and first-save migration"
+}

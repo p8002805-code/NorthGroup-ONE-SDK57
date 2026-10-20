@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
+import { isTrustedBomWebUrl } from '../../../services/security/trustedExternalUrl';
 
 const NAVY = '#061A2D';
 const NAVY_2 = '#09233C';
@@ -205,9 +206,18 @@ export default function WeatherRadarScreen({ goBack }) {
           javaScriptEnabled
           domStorageEnabled
           geolocationEnabled
-          originWhitelist={['https://*', 'http://*']}
+          originWhitelist={['https://*.bom.gov.au/*']}
+          onShouldStartLoadWithRequest={({ url }) => isTrustedBomWebUrl(url)}
           allowsBackForwardNavigationGestures={false}
           setSupportMultipleWindows={false}
+          javaScriptCanOpenWindowsAutomatically={false}
+          mixedContentMode="never"
+          allowFileAccess={false}
+          allowFileAccessFromFileURLs={false}
+          allowUniversalAccessFromFileURLs={false}
+          sharedCookiesEnabled={false}
+          thirdPartyCookiesEnabled={false}
+          allowsLinkPreview={false}
           injectedJavaScript={BOM_RADAR_CLEANUP}
           onLoad={() => webViewRef.current?.injectJavaScript(BOM_RADAR_CLEANUP)}
           style={styles.webView}

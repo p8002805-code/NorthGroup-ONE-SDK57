@@ -26,6 +26,9 @@ export default function AppHeader({
   rightContent = null,
   compact = false,
   centred = false,
+  backOnly = false,
+  backLarge = false,
+  backCompact = false,
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -50,12 +53,20 @@ export default function AppHeader({
             styles.navigationRow,
             centred && styles.navigationRowCentred,
             centred && { top: insets.top + SPACING.xs },
+            compact && styles.navigationRowCompact,
           ]}
         >
           {onBack ? (
             <AppBackButton
               label={backLabel}
-              style={styles.navigationButton}
+              showLabel={!backOnly}
+              large={backLarge}
+              compact={backCompact}
+              style={[
+                styles.navigationButton,
+                backLarge && styles.navigationButtonLarge,
+                backCompact && styles.navigationButtonCompact,
+              ]}
               onPress={onBack}
             />
           ) : (
@@ -68,15 +79,28 @@ export default function AppHeader({
             style={[
               styles.navigationButton,
               centred && styles.navigationButtonRight,
+              compact && styles.navigationButtonRightCompact,
             ]}
           >
             {rightContent}
           </View>
         </View>
 
-        <View style={centred && styles.titleGroupCentred}>
+        <View
+          style={[
+            centred && styles.titleGroupCentred,
+            compact && centred && styles.titleGroupCompact,
+            compact && !centred && styles.titleGroupCompactLeft,
+          ]}
+        >
           {!!eyebrow && (
-            <Text style={[styles.eyebrow, centred && styles.textCentred]}>
+            <Text
+              style={[
+                styles.eyebrow,
+                compact && styles.eyebrowCompact,
+                centred && styles.textCentred,
+              ]}
+            >
               {eyebrow}
             </Text>
           )}
@@ -91,7 +115,13 @@ export default function AppHeader({
             {title}
           </Text>
 
-          <View style={[styles.titleAccent, centred && styles.titleAccentCentred]} />
+          <View
+            style={[
+              styles.titleAccent,
+              compact && styles.titleAccentCompact,
+              centred && styles.titleAccentCentred,
+            ]}
+          />
 
           {!!subtitle && (
             <Text
@@ -140,7 +170,7 @@ const createStyles = (colors) => StyleSheet.create({
   },
 
   backgroundImageStyle: {
-    opacity: 0.7,
+    opacity: 0.5,
   },
 
   overlay: {
@@ -157,7 +187,8 @@ const createStyles = (colors) => StyleSheet.create({
   },
 
   containerCompact: {
-    paddingBottom: SPACING.lg,
+    paddingHorizontal: SPACING.lg,
+    paddingBottom: SPACING.md,
   },
 
   containerCentred: {
@@ -186,8 +217,40 @@ const createStyles = (colors) => StyleSheet.create({
     justifyContent: 'center',
   },
 
+  navigationButtonLarge: {
+    minWidth: 54,
+    width: 54,
+    minHeight: 54,
+    height: 54,
+    paddingHorizontal: 0,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  navigationButtonCompact: {
+    minWidth: 42,
+    width: 42,
+    minHeight: 40,
+    height: 40,
+    paddingHorizontal: 0,
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  navigationRowCompact: {
+    minHeight: 40,
+  },
+
   navigationButtonRight: {
     alignItems: 'flex-end',
+  },
+
+  navigationButtonRightCompact: {
+    minWidth: 100,
   },
 
   navigationCentre: {
@@ -197,6 +260,14 @@ const createStyles = (colors) => StyleSheet.create({
   titleGroupCentred: {
     alignItems: 'center',
     paddingHorizontal: 76,
+  },
+
+  titleGroupCompact: {
+    paddingHorizontal: 68,
+  },
+
+  titleGroupCompactLeft: {
+    paddingHorizontal: SPACING.xs,
   },
 
   textCentred: {
@@ -210,6 +281,12 @@ const createStyles = (colors) => StyleSheet.create({
     marginBottom: SPACING.xs,
   },
 
+  eyebrowCompact: {
+    fontSize: 8,
+    letterSpacing: 1.4,
+    marginBottom: 2,
+  },
+
   title: {
     ...TYPOGRAPHY.screenTitle,
     color: colors.white,
@@ -217,7 +294,9 @@ const createStyles = (colors) => StyleSheet.create({
   },
 
   titleCompact: {
-    fontSize: 25,
+    fontSize: 18,
+    lineHeight: 22,
+    letterSpacing: -0.1,
   },
 
   titleAccent: {
@@ -226,6 +305,10 @@ const createStyles = (colors) => StyleSheet.create({
     backgroundColor: colors.accent,
     borderRadius: RADIUS.pill,
     marginTop: SPACING.sm,
+  },
+
+  titleAccentCompact: {
+    display: 'none',
   },
 
   titleAccentCentred: {

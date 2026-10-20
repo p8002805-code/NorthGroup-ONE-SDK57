@@ -75,7 +75,7 @@ const modelLabel = (model = "") =>
     .replace(/\b\w/g, (c) => c.toUpperCase()) || "Other";
 const imageFor = (feature) => getTmrFeatureImages(feature.code)[0];
 
-function TmrGuideHeader({ insets, onBack }) {
+function TmrGuideHeader({ insets, onBack, backLabel }) {
   return (
     <ImageBackground
       source={require("../../../../assets/topo-bg.png")}
@@ -85,7 +85,7 @@ function TmrGuideHeader({ insets, onBack }) {
       <View pointerEvents="none" style={styles.tmrHeaderShade} />
       <View style={[styles.tmrHeaderTop, { paddingTop: insets.top + 8 }]}>
         <AppBackButton
-          label="Field Tools"
+          label={backLabel}
           style={styles.tmrBackButton}
           onPress={onBack}
         />
@@ -111,6 +111,7 @@ export default function TmrFeatureGuideScreen({
   setScreen,
   openFeatureDetails,
   openCamera,
+  backLabel = "Field Tools",
 }) {
   const insets = useSafeAreaInsets();
   const listRef = useRef(null);
@@ -248,7 +249,7 @@ export default function TmrFeatureGuideScreen({
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
-      <TmrGuideHeader insets={insets} onBack={() => setScreen("home")} />
+      <TmrGuideHeader insets={insets} onBack={() => setScreen("home")} backLabel={backLabel} />
       <FlatList
         ref={listRef}
         data={query || browseLayer ? results : []}
@@ -256,6 +257,9 @@ export default function TmrFeatureGuideScreen({
         renderItem={card}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         contentContainerStyle={styles.content}
         ListHeaderComponent={
           <>

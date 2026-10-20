@@ -4,6 +4,8 @@ import {
   Image,
   ImageBackground,
   Keyboard,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StatusBar,
@@ -18,6 +20,7 @@ import {
   createLocalUserId,
   normaliseProfile,
 } from '../accountProfile';
+import { suggestedUserInitials } from '../../../utils/userInitials';
 
 const OFFICES = ['Brisbane', 'Sunshine Coast', 'Gladstone'];
 const EMAIL_DOMAIN = '@northgroup.com.au';
@@ -78,8 +81,7 @@ export default function ProfileSetupScreen({ profile, onComplete }) {
   const [saving, setSaving] = useState(false);
 
   const suggestedInitials = (firstName, lastName) => (
-    `${String(firstName || '').trim()[0] || ''}${String(lastName || '').trim()[0] || ''}`
-      .toUpperCase()
+    suggestedUserInitials({ firstName, lastName })
   );
 
   const set = (key, value) => {
@@ -163,11 +165,20 @@ export default function ProfileSetupScreen({ profile, onComplete }) {
         </View>
       </ImageBackground>
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardDismissMode="on-drag"
-        keyboardShouldPersistTaps="handled"
+      <KeyboardAvoidingView
+        style={styles.formArea}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
       >
+        <ScrollView
+          contentContainerStyle={styles.content}
+          bounces={false}
+          alwaysBounceVertical={false}
+          overScrollMode="never"
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
+        >
         <View style={styles.introCard}>
           <View style={styles.stepBadge}>
             <Text style={styles.stepBadgeText}>1</Text>
@@ -295,13 +306,15 @@ export default function ProfileSetupScreen({ profile, onComplete }) {
             {saving ? 'Saving Profile…' : 'Continue to Choose Your Job'}
           </Text>
         </Pressable>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }
 
 const createStyles = (colors) => StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.pageBackground },
+  formArea: { flex: 1 },
   hero: {
     minHeight: 310,
     backgroundColor: colors.navy,

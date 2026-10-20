@@ -14,6 +14,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
@@ -26,12 +27,15 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { File } from 'expo-file-system';
+import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import ImageViewing from 'react-native-image-viewing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import ProfileAvatar from '../../../components/ProfileAvatar';
+import AssignedTeamModal from '../../../components/AssignedTeamModal';
+import { isTrustedTeamsWebUrl } from '../../../services/security/trustedExternalUrl';
 import JobChatAttachmentCard from '../components/JobChatAttachmentCard';
 import JobChatAttachmentPicker from '../components/JobChatAttachmentPicker';
 import {
@@ -63,8 +67,11 @@ import {
   loadJobChatMessages,
   readCachedJobChatMessages,
   readCachedJobChatRoom,
+  setJobChatReaction,
   sendJobChatAttachmentMessage,
   sendJobChatMessage,
+  softDeleteJobChatMessage,
+  unsetJobChatReaction,
 } from '../jobChatService';
 
 const NAVY = '#061A2D';
@@ -78,6 +85,16 @@ const AMBER = '#E3A72F';
 const RED = '#E14D4D';
 const REFRESH_INTERVAL_MS = 4000;
 const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
+const MESSAGE_REACTIONS = [
+  { type: 'like', emoji: '👍' },
+  { type: 'heart', emoji: '❤️' },
+  { type: 'laugh', emoji: '😂' },
+  { type: 'surprised', emoji: '😮' },
+  { type: 'sad', emoji: '😢' },
+];
+const reactionEmojiFor = (reactionType) => (
+  MESSAGE_REACTIONS.find((reaction) => reaction.type === reactionType)?.emoji || '👍'
+);
 
 const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 const sortMessages = (values) => [...values].sort((left, right) => (
@@ -120,6 +137,12 @@ const formatMessageTime = (value) => {
     hour: 'numeric',
     minute: '2-digit',
   });
+};
+
+const compactTimestamp = (value = new Date()) => {
+  const date = value instanceof Date ? value : new Date(value);
+  const pad = (part) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 };
 
 const attachmentErrorIsRetryable = (error) => {
@@ -171,8 +194,13 @@ export default function JobChatScreen({
   const [error, setError] = useState('');
   const [offline, setOffline] = useState(false);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [actionMessage, setActionMessage] = useState(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [replyTo, setReplyTo] = useState(null);
+  const [assignedTeamVisible, setAssignedTeamVisible] = useState(false);
 
   const scrollRef = useRef(null);
+  const composerInputRef = useRef(null);
   const activeRef = useRef(true);
   const requestRef = useRef(false);
   const roomRef = useRef(null);
@@ -263,6 +291,10 @@ export default function JobChatScreen({
   const assignedLabel = room
     ? `${Number.isFinite(Number(room.assignedCount)) ? Number(room.assignedCount) : 0} ASSIGNED`
     : 'TEAMS SHIFTS';
+  const senderInitials = (clean(profile?.initials) || initialsFor(displayName))
+    .replace(/[^A-Z0-9]/gi, '')
+    .toUpperCase()
+    .slice(0, 4) || 'NG';
 
   const applyOutbox = useCallback((items) => {
     const values = Array.isArray(items) ? items : [];
@@ -612,6 +644,8 @@ export default function JobChatScreen({
     setLocalTextMessages([]);
     setOutboxItems([]);
     setSelectedAttachments([]);
+    setReplyTo(null);
+    setActionMessage(null);
     setError('');
     setOffline(false);
     setLoading(true);
@@ -798,7 +832,7 @@ export default function JobChatScreen({
     const asset = result.assets[0];
     await stagePickedAttachments([{
       uri: asset.uri,
-      name: asset.fileName || `Job-${jobNumber || 'Chat'}-${Date.now()}.jpg`,
+      name: `${jobNumber || 'JOB'}_${senderInitials}_${compactTimestamp()}.jpg`,
       mimeType: asset.mimeType || 'image/jpeg',
       size: asset.fileSize,
       width: asset.width,
@@ -827,9 +861,10 @@ export default function JobChatScreen({
       exif: false,
     });
     if (result.canceled || !result.assets?.length) return;
+    const pickedAt = compactTimestamp();
     await stagePickedAttachments(result.assets.map((asset, index) => ({
       uri: asset.uri,
-      name: asset.fileName || `Job-${jobNumber || 'Chat'}-Photo-${Date.now()}-${index + 1}.jpg`,
+      name: `${jobNumber || 'JOB'}_${senderInitials}_${pickedAt}_${index + 1}.jpg`,
       mimeType: asset.mimeType || 'image/jpeg',
       size: asset.fileSize,
       width: asset.width,
@@ -880,9 +915,17 @@ export default function JobChatScreen({
     const value = draft.trim();
     const currentRoom = roomRef.current;
     if (!currentRoom?.id || (!value && !selectedRef.current.length)) return;
+    const replySnippet = clean(replyTo?.text || replyTo?.attachments?.[0]?.name).slice(0, 120);
+    const outboundValue = replyTo
+      ? [
+        `↪ Reply to ${replyTo.senderName || 'message'}: ${replySnippet || 'attachment'}`,
+        value,
+      ].filter(Boolean).join('\n')
+      : value;
 
     if (!selectedRef.current.length) {
-      sendText(value);
+      sendText(outboundValue);
+      setReplyTo(null);
       return;
     }
 
@@ -892,7 +935,7 @@ export default function JobChatScreen({
         chatId: currentRoom.id,
         senderId: accountId,
         senderName: displayName,
-        text: value,
+        text: outboundValue,
         attachments: selectedRef.current,
       });
       const next = await enqueueJobChatOutboxItem({
@@ -904,6 +947,7 @@ export default function JobChatScreen({
       selectedRef.current = [];
       setSelectedAttachments([]);
       setDraft('');
+      setReplyTo(null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setTimeout(() => processOutbox(), 0);
     } catch (queueError) {
@@ -988,11 +1032,100 @@ export default function JobChatScreen({
   const openInTeams = async (url = '') => {
     const target = url || roomRef.current?.webUrl;
     if (!target) return;
+    if (!isTrustedTeamsWebUrl(target)) {
+      Alert.alert('Untrusted link blocked', 'This chat did not contain a secure Microsoft Teams link.');
+      return;
+    }
     try {
       await Linking.openURL(target);
     } catch {
       Alert.alert('Microsoft Teams', 'This job chat could not be opened in Teams on this device.');
     }
+  };
+
+  const showAssignedPeople = () => {
+    setAssignedTeamVisible(true);
+  };
+
+  const toggleReaction = async (message, reactionType) => {
+    if (!message?.id || !roomRef.current?.id || actionBusy) return;
+    const existing = (Array.isArray(message.reactions) ? message.reactions : [])
+      .find((reaction) => (
+        reaction.reactionType === reactionType
+        && String(reaction.userId || '').toLowerCase() === currentUserId
+      ));
+    setActionBusy(true);
+    try {
+      const accessToken = await getAccessToken();
+      const operation = existing ? unsetJobChatReaction : setJobChatReaction;
+      await operation({
+        accessToken,
+        chatId: roomRef.current.id,
+        messageId: message.id,
+        reactionType,
+      });
+      setActionMessage(null);
+      Haptics.selectionAsync().catch(() => {});
+      await refresh({ silent: true });
+    } catch (reactionError) {
+      Alert.alert(
+        'Reaction not updated',
+        reactionError?.message || 'Microsoft Teams could not update this reaction.',
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const beginReply = (message) => {
+    setActionMessage(null);
+    setReplyTo(message);
+    setTimeout(() => composerInputRef.current?.focus(), 120);
+  };
+
+  const copyMessage = async (message) => {
+    const value = clean(message?.text || message?.attachments?.[0]?.name);
+    setActionMessage(null);
+    if (!value) return;
+    await Clipboard.setStringAsync(value);
+    Haptics.selectionAsync().catch(() => {});
+  };
+
+  const confirmUnsendMessage = (message) => {
+    setActionMessage(null);
+    Alert.alert(
+      'Unsend this message?',
+      'This removes the message from the Microsoft Teams job chat for everyone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unsend',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setActionBusy(true);
+              const accessToken = await getAccessToken();
+              await softDeleteJobChatMessage({
+                accessToken,
+                accountId,
+                job: activeJob,
+                chatId: roomRef.current.id,
+                messageId: message.id,
+              });
+              setLiveMessages((current) => current.filter((item) => item.id !== message.id));
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            } catch (deleteError) {
+              Alert.alert(
+                'Message not unsent',
+                deleteError?.message || 'Microsoft Teams could not remove this message.',
+              );
+            } finally {
+              setActionBusy(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const openPhotoAttachment = async (attachment, knownUri = '') => {
@@ -1126,7 +1259,7 @@ export default function JobChatScreen({
     && Boolean(draft.trim() || selectedAttachments.length);
 
   return (
-    <View style={styles.page}>
+    <View style={[styles.page, keyboardOpen && styles.pageKeyboard]}>
       <StatusBar barStyle="light-content" backgroundColor={NAVY} />
 
       <ImageBackground
@@ -1181,7 +1314,13 @@ export default function JobChatScreen({
             </View>
           </View>
 
-          <View style={styles.headerConnection}>
+          <Pressable
+            style={({ pressed }) => [styles.headerConnection, pressed && styles.pressed]}
+            onPress={showAssignedPeople}
+            disabled={!room}
+            accessibilityRole="button"
+            accessibilityLabel={`${assignedLabel}. Show assigned employees`}
+          >
             <View style={styles.connectionTopRow}>
               {connectionState.spinning ? (
                 <ActivityIndicator size="small" color={connectionState.colour} />
@@ -1192,8 +1331,12 @@ export default function JobChatScreen({
                 {connectionState.label}
               </Text>
             </View>
-            <Text style={styles.assignedLabel}>{assignedLabel}</Text>
-          </View>
+            <View style={styles.assignedRow}>
+              <Ionicons name="people-outline" size={10} color="rgba(255,255,255,0.54)" />
+              <Text style={styles.assignedLabel}>{assignedLabel}</Text>
+              <Ionicons name="chevron-forward" size={10} color={GOLD} />
+            </View>
+          </Pressable>
         </View>
       </ImageBackground>
 
@@ -1337,6 +1480,12 @@ export default function JobChatScreen({
               const showDateDivider = !previous
                 || dateKeyFor(previous.createdAt) !== dateKeyFor(message.createdAt);
               const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+              const reactions = Array.isArray(message.reactions) ? message.reactions : [];
+              const reactionGroups = [...reactions.reduce((groups, reaction) => {
+                const current = groups.get(reaction.reactionType) || [];
+                groups.set(reaction.reactionType, [...current, reaction]);
+                return groups;
+              }, new Map()).entries()];
               const failedText = message.localState === 'failed' && !message.outboxId;
 
               return (
@@ -1370,7 +1519,13 @@ export default function JobChatScreen({
                       </View>
                     ) : null}
 
-                    <View style={[styles.messageBlock, mine && styles.messageBlockMine]}>
+                    <Pressable
+                      style={[styles.messageBlock, mine && styles.messageBlockMine]}
+                      onLongPress={() => setActionMessage(message)}
+                      delayLongPress={320}
+                      disabled={Boolean(message.outboxId || String(message.id).startsWith('local-'))}
+                      accessibilityHint="Press and hold for reactions and message actions"
+                    >
                       {!mine && !grouped ? (
                         <Text style={styles.sender} numberOfLines={1}>{message.senderName}</Text>
                       ) : null}
@@ -1421,6 +1576,31 @@ export default function JobChatScreen({
                         />
                       ))}
 
+                      {reactionGroups.length ? (
+                        <View style={[styles.reactionSummary, mine && styles.reactionSummaryMine]}>
+                          {reactionGroups.map(([reactionType, people]) => {
+                            const reactedByMe = people.some((reaction) => (
+                              String(reaction.userId || '').toLowerCase() === currentUserId
+                            ));
+                            return (
+                              <Pressable
+                                key={reactionType}
+                                style={[
+                                  styles.reactionPill,
+                                  reactedByMe && styles.reactionPillMine,
+                                ]}
+                                onPress={() => toggleReaction(message, reactionType)}
+                                accessibilityRole="button"
+                                accessibilityLabel={`${reactionEmojiFor(reactionType)} reaction from ${people.length} ${people.length === 1 ? 'person' : 'people'}`}
+                              >
+                                <Text style={styles.reactionEmoji}>{reactionEmojiFor(reactionType)}</Text>
+                                <Text style={styles.reactionCount}>{people.length}</Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      ) : null}
+
                       <Text style={[styles.time, mine && styles.timeMine]}>
                         {formatMessageTime(message.createdAt)}
                         {message.editedAt ? ' · Edited' : ''}
@@ -1431,7 +1611,7 @@ export default function JobChatScreen({
                         {message.localState === 'queued' ? ' · Waiting for connection' : ''}
                         {message.localState === 'failed' ? ' · Not sent · Tap attachment to retry' : ''}
                       </Text>
-                    </View>
+                    </Pressable>
                   </View>
                 </React.Fragment>
               );
@@ -1458,6 +1638,26 @@ export default function JobChatScreen({
                 {connectionState.label}
               </Text>
             </View>
+
+            {replyTo ? (
+              <View style={styles.replyBar}>
+                <View style={styles.replyAccent} />
+                <View style={styles.replyCopy}>
+                  <Text style={styles.replyLabel}>REPLYING TO {clean(replyTo.senderName).toUpperCase()}</Text>
+                  <Text style={styles.replyPreview} numberOfLines={1}>
+                    {replyTo.text || replyTo.attachments?.[0]?.name || 'Attachment'}
+                  </Text>
+                </View>
+                <Pressable
+                  style={({ pressed }) => [styles.replyClose, pressed && styles.pressed]}
+                  onPress={() => setReplyTo(null)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel reply"
+                >
+                  <Ionicons name="close" size={17} color={WHITE} />
+                </Pressable>
+              </View>
+            ) : null}
 
             {selectedAttachments.length || preparingAttachments ? (
               <View style={styles.selectionTray}>
@@ -1553,6 +1753,7 @@ export default function JobChatScreen({
               </Pressable>
 
               <TextInput
+                ref={composerInputRef}
                 value={draft}
                 onChangeText={setDraft}
                 onFocus={() => {
@@ -1601,6 +1802,98 @@ export default function JobChatScreen({
         onChoosePhotos={choosePhotos}
         onChooseFile={chooseFile}
       />
+
+      <AssignedTeamModal
+        visible={assignedTeamVisible}
+        job={activeJob}
+        members={room?.assignedMembers}
+        assignedCount={room?.assignedCount}
+        loading={loading || refreshing}
+        resolved={Boolean(
+          room?.assignedMembersResolved ?? room?.directoryMembersResolved,
+        )}
+        error={room?.syncWarning || ''}
+        bottomInset={insets.bottom}
+        onClose={() => setAssignedTeamVisible(false)}
+        onRefresh={() => refresh({ syncMembers: true })}
+      />
+
+      <Modal
+        visible={Boolean(actionMessage)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !actionBusy && setActionMessage(null)}
+      >
+        <Pressable style={styles.actionShade} onPress={() => !actionBusy && setActionMessage(null)}>
+          <Pressable style={[styles.actionSheet, { paddingBottom: Math.max(insets.bottom, 14) }]}>
+            <View style={styles.actionHandle} />
+            <Text style={styles.actionEyebrow}>MESSAGE ACTIONS</Text>
+            <Text style={styles.actionTitle} numberOfLines={2}>
+              {actionMessage?.text || actionMessage?.attachments?.[0]?.name || 'Job Chat message'}
+            </Text>
+            <View style={styles.reactionPicker}>
+              {MESSAGE_REACTIONS.map(({ type: reactionType, emoji }) => {
+                const selected = (actionMessage?.reactions || []).some((reaction) => (
+                  reaction.reactionType === reactionType
+                  && String(reaction.userId || '').toLowerCase() === currentUserId
+                ));
+                return (
+                  <Pressable
+                    key={reactionType}
+                    style={[styles.reactionChoice, selected && styles.reactionChoiceSelected]}
+                    onPress={() => toggleReaction(actionMessage, reactionType)}
+                    disabled={actionBusy}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${selected ? 'Remove' : 'Add'} ${reactionType} reaction`}
+                  >
+                    <Text style={styles.reactionChoiceText}>{emoji}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable
+              style={({ pressed }) => [styles.actionRow, pressed && styles.actionRowPressed]}
+              onPress={() => beginReply(actionMessage)}
+              disabled={actionBusy}
+            >
+              <Ionicons name="arrow-undo-outline" size={20} color={NAVY} />
+              <Text style={styles.actionRowText}>Reply</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.actionRow, pressed && styles.actionRowPressed]}
+              onPress={() => copyMessage(actionMessage)}
+              disabled={actionBusy}
+            >
+              <Ionicons name="copy-outline" size={20} color={NAVY} />
+              <Text style={styles.actionRowText}>Copy</Text>
+            </Pressable>
+            {String(actionMessage?.senderId || '').toLowerCase() === currentUserId ? (
+              <Pressable
+                style={({ pressed }) => [styles.actionRow, pressed && styles.actionRowPressed]}
+                onPress={() => confirmUnsendMessage(actionMessage)}
+                disabled={actionBusy}
+              >
+                <Ionicons name="trash-outline" size={20} color={RED} />
+                <Text style={[styles.actionRowText, styles.actionRowDanger]}>Unsend message</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={({ pressed }) => [styles.actionRow, pressed && styles.actionRowPressed]}
+              onPress={() => {
+                const url = actionMessage?.webUrl;
+                setActionMessage(null);
+                openInTeams(url);
+              }}
+            >
+              <Ionicons name="open-outline" size={20} color={NAVY} />
+              <Text style={styles.actionRowText}>Open in Microsoft Teams</Text>
+            </Pressable>
+            <Pressable onPress={() => setActionMessage(null)} disabled={actionBusy}>
+              <Text style={styles.actionCancel}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <ImageViewing
         images={viewer?.uri ? [{ uri: viewer.uri }] : []}
@@ -1669,6 +1962,7 @@ export default function JobChatScreen({
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: PAGE },
+  pageKeyboard: { backgroundColor: NAVY },
   flex: { flex: 1 },
   pressed: { opacity: 0.68 },
 
@@ -1723,7 +2017,8 @@ const styles = StyleSheet.create({
   headerConnection: { alignItems: 'flex-end', minWidth: 94 },
   connectionTopRow: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 18 },
   connectionLabel: { fontSize: 7, fontWeight: '900', letterSpacing: 0.8 },
-  assignedLabel: { color: 'rgba(255,255,255,0.48)', fontSize: 7, fontWeight: '800', letterSpacing: 0.55, marginTop: 2 },
+  assignedRow: { minHeight: 20, flexDirection: 'row', alignItems: 'center', gap: 3 },
+  assignedLabel: { color: 'rgba(255,255,255,0.62)', fontSize: 7, fontWeight: '800', letterSpacing: 0.55 },
 
   messageContent: { flexGrow: 1, paddingHorizontal: 13, paddingTop: 12, paddingBottom: 22 },
   systemEvent: {
@@ -1849,6 +2144,22 @@ const styles = StyleSheet.create({
   messageTextMine: { color: WHITE },
   time: { color: '#87959F', fontSize: 8, fontWeight: '600', marginTop: 4, marginLeft: 3 },
   timeMine: { textAlign: 'right', marginLeft: 0, marginRight: 3 },
+  reactionSummary: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 5, marginLeft: 3 },
+  reactionSummaryMine: { justifyContent: 'flex-end', marginLeft: 0, marginRight: 3 },
+  reactionPill: {
+    minHeight: 25,
+    borderRadius: 13,
+    paddingHorizontal: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: WHITE,
+    borderWidth: 1,
+    borderColor: '#D5E0E7',
+  },
+  reactionPillMine: { borderColor: GOLD, backgroundColor: '#FFF8E8' },
+  reactionEmoji: { fontSize: 13 },
+  reactionCount: { color: NAVY, fontSize: 9, fontWeight: '900' },
 
   composerBar: {
     minHeight: 94,
@@ -1877,6 +2188,23 @@ const styles = StyleSheet.create({
   composerStatusDot: { width: 6, height: 6, borderRadius: 3 },
   composerMetaLabel: { color: 'rgba(255,255,255,0.58)', fontSize: 6.5, fontWeight: '900', letterSpacing: 0.75 },
   composerMetaState: { fontSize: 7, fontWeight: '900', letterSpacing: 0.8, marginLeft: 8 },
+  replyBar: {
+    minHeight: 46,
+    marginTop: 5,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(22,40,55,0.94)',
+    borderWidth: 1,
+    borderColor: 'rgba(214,168,79,0.34)',
+    overflow: 'hidden',
+  },
+  replyAccent: { width: 3, alignSelf: 'stretch', marginVertical: 7, borderRadius: 2, backgroundColor: GOLD },
+  replyCopy: { flex: 1, minWidth: 0, marginLeft: 9 },
+  replyLabel: { color: GOLD, fontSize: 7, fontWeight: '900', letterSpacing: 0.65 },
+  replyPreview: { color: 'rgba(255,255,255,0.7)', fontSize: 10, marginTop: 3 },
+  replyClose: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   selectionTray: {
     marginTop: 4,
     borderRadius: 15,
@@ -1969,6 +2297,44 @@ const styles = StyleSheet.create({
   sendInner: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: GOLD },
   sendInnerDisabled: { backgroundColor: 'rgba(143,160,175,0.18)' },
   sendPressed: { transform: [{ scale: 0.96 }], opacity: 0.78 },
+
+  actionShade: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.48)' },
+  actionSheet: {
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    paddingTop: 9,
+    paddingHorizontal: 18,
+    backgroundColor: WHITE,
+  },
+  actionHandle: { width: 42, height: 4, borderRadius: 2, alignSelf: 'center', backgroundColor: '#D2DBE1', marginBottom: 16 },
+  actionEyebrow: { color: '#9A742E', fontSize: 8, fontWeight: '900', letterSpacing: 1.1 },
+  actionTitle: { color: NAVY, fontSize: 15, lineHeight: 20, fontWeight: '800', marginTop: 4 },
+  reactionPicker: { flexDirection: 'row', justifyContent: 'space-between', gap: 7, marginVertical: 17 },
+  reactionChoice: {
+    flex: 1,
+    aspectRatio: 1,
+    maxWidth: 55,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F1F4F6',
+    borderWidth: 1,
+    borderColor: '#DCE3E8',
+  },
+  reactionChoiceSelected: { backgroundColor: '#FFF4D8', borderColor: GOLD },
+  reactionChoiceText: { fontSize: 23 },
+  actionRow: {
+    minHeight: 52,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#DCE3E8',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  actionRowPressed: { opacity: 0.55 },
+  actionRowText: { color: NAVY, fontSize: 14, fontWeight: '800' },
+  actionRowDanger: { color: RED },
+  actionCancel: { color: '#687784', fontSize: 13, fontWeight: '800', textAlign: 'center', paddingTop: 15, paddingBottom: 4 },
 
   viewerHeader: {
     position: 'absolute',

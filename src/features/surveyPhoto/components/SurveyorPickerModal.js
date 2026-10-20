@@ -5,12 +5,12 @@ import { STAFF_NAMES } from "../../../constants/staffNames";
 import styles from "../styles/surveyPhotoStyles";
 
 export default function SurveyorPickerModal({
-  getSurveyorInitials,
   onChooseSurveyor,
   projectSurveyor,
   setSurveyorPicker,
   surveyor,
   surveyorPicker,
+  userInitials = 'NG',
 }) {
   return (
     <Modal
@@ -25,6 +25,9 @@ export default function SurveyorPickerModal({
       >
         <View style={styles.picker}>
           <Text style={styles.pickerTitle}>Select Surveyor</Text>
+          <Text style={styles.initialsText}>
+            Photo initials: {userInitials} · Profile Settings
+          </Text>
           <ScrollView>
             {STAFF_NAMES.map((name) => {
               const selected = (projectSurveyor || surveyor) === name;
@@ -36,9 +39,6 @@ export default function SurveyorPickerModal({
                 >
                   <View>
                     <Text style={styles.typeText}>{name}</Text>
-                    <Text style={styles.initialsText}>
-                      {getSurveyorInitials(name)}
-                    </Text>
                   </View>
                   {selected ? (
                     <Text style={styles.selectedTick}>✓</Text>

@@ -4,7 +4,29 @@ import {
   S500_HAZARD_ROWS,
   S500_MAX_HAZARD_COUNT,
 } from '../constants/s500HazardRows';
+import { emptyS500 } from '../data/emptyForms';
 import { profileFullName } from '../features/account/accountProfile';
+
+const S500_DRAFT_META_KEYS = new Set([
+  'jobNumber',
+  'completedBy',
+  'hazardRowCount',
+  'deletedHazardRows',
+  'deletedPpeKeys',
+  'customPpeItems',
+]);
+
+export const hasMeaningfulS500Draft = (form) => (
+  Boolean(form) && Object.keys(emptyS500).some((key) => {
+    if (S500_DRAFT_META_KEYS.has(key)) return false;
+
+    const value = form?.[key];
+    const baseline = emptyS500[key];
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'boolean') return value && value !== baseline;
+    return String(value ?? '').trim() !== String(baseline ?? '').trim();
+  })
+);
 
 const isHazardPopulated = (form, row) => !!(
   String(form?.[row.hazardKey] || '').trim()

@@ -1,0 +1,28 @@
+NORTHGROUP ONE - SDK 57 BLANK SCREEN REPAIR V2
+19 October 2026
+
+ROOT CAUSE
+- Active Job Workspace, Forms and Job Files were mounted inside overlapping absolute-positioned animated panes.
+- Under the SDK 57 / React Native renderer, a pane could remain visually hidden even though navigation completed and SharePoint data loaded.
+- This explains both symptoms: the navy Active Job screen and a Job Files count with no painted rows.
+
+FIX
+- Replaced the animated absolute pane stack with normal flex layout panes.
+- Only the selected pane is displayed; previously visited panes remain mounted without overlapping the active screen.
+- Removed the dashboard-to-workspace opacity/height shell animation.
+- Every Job Hub request now explicitly clears the old shell-transition route parameter.
+- Kept SharePoint upload, folder selection, filters, item actions and job data logic unchanged.
+
+VALIDATION
+- Project parser, imports, architecture, dependencies and security checks: passed.
+- Automated tests: 146 passed, 0 failed.
+- Expo Doctor: 21/21 checks passed.
+- iOS production export: passed (1,592 modules bundled).
+
+RETEST
+1. Replace these files over the project from the previous repair.
+2. Run: npm install
+3. Run: npx expo start --go --tunnel --clear
+4. Tap the Active Job banner and confirm the workspace renders immediately.
+5. Open Job Files and confirm the listed item count matches visible rows.
+6. Start an upload, enter the intended folder, select Save Here, and confirm exactly one file appears after refresh.

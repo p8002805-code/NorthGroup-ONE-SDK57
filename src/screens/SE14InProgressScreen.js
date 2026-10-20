@@ -1,5 +1,4 @@
 import React, {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -10,17 +9,25 @@ import {
   Alert,
   Animated,
   Image,
-  ImageBackground,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import AppBackButton from '../components/AppBackButton';
+import SE14ArchiveDayGroup from '../components/SE14ArchiveDayGroup';
+import SE14BulkSessionNumberEditor from '../components/SE14BulkSessionNumberEditor';
+import SE14DayPreparationOverlay from '../components/SE14DayPreparationOverlay';
+import SE14RoundStatusCard from '../components/SE14RoundStatusCard';
+import SE14WorkflowDock from '../components/SE14WorkflowDock';
+import SE14WorkspaceHeader from '../components/SE14WorkspaceHeader';
 
 import {
   GOLD,
@@ -30,6 +37,7 @@ import {
 import {
   getSE14CompletedDate,
   getSE14RequirementProgress,
+  groupSE14ArchivedRecords,
   SE14_END_REQUIREMENTS,
 } from '../utils/se14Records';
 import {
@@ -38,6 +46,9 @@ import {
   groupSE14Photos,
   getSE14PhotoDateKey,
 } from '../utils/se14PhotoStorage';
+import { profileInitials } from '../features/account/accountProfile';
+import { useSE14DayPreparation } from '../features/gnss/hooks/useSE14DayPreparation';
+import { getSE14CurrentRound } from '../features/gnss/se14Rounds';
 
 const MUTED_TEXT = '#64748B';
 const PAGE = '#F2F5F7';
@@ -64,31 +75,58 @@ const dateHeading = (date) => {
     .toUpperCase()}`;
 };
 
-const groupCompletedByDate = (records) => {
-  const groups = [];
+const sessionNumberValue = (record) => {
+  const value = Number.parseInt(record?.data?.sessionNumber, 10);
+  return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+};
 
-  [...records]
-    .sort(
-      (left, right) =>
-        getSE14CompletedDate(right).getTime() -
-        getSE14CompletedDate(left).getTime()
-    )
-    .forEach((record) => {
-      const date = getSE14CompletedDate(record);
-      const key = dateKey(date);
-      let group = groups.find((item) => item.key === key);
+const groupCompletedByDate = (records, sortMode = 'newest') => {
+  const grouped = new Map();
 
-      if (!group) {
-        group = {
-          key,
-          label: dateHeading(date),
-          records: [],
-        };
-        groups.push(group);
+  records.forEach((record) => {
+    const date = getSE14CompletedDate(record);
+    const key = dateKey(date);
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        date,
+        label: dateHeading(date),
+        records: [],
+      });
+    }
+
+    grouped.get(key).records.push(record);
+  });
+
+  const dateDirection = sortMode === 'oldest' ? 1 : -1;
+  const groups = [...grouped.values()].sort(
+    (left, right) =>
+      dateDirection * (left.date.getTime() - right.date.getTime())
+  );
+
+  groups.forEach((group) => {
+    group.records.sort((left, right) => {
+      if (sortMode === 'session') {
+        const sessionComparison =
+          sessionNumberValue(left) - sessionNumberValue(right);
+
+        if (sessionComparison !== 0) return sessionComparison;
+
+        return String(left?.data?.markId || '').localeCompare(
+          String(right?.data?.markId || ''),
+          'en-AU',
+          { numeric: true, sensitivity: 'base' }
+        );
       }
 
-      group.records.push(record);
+      const timeComparison =
+        getSE14CompletedDate(left).getTime() -
+        getSE14CompletedDate(right).getTime();
+
+      return sortMode === 'oldest' ? timeComparison : -timeComparison;
     });
+  });
 
   return groups;
 };
@@ -97,16 +135,31 @@ const pmLabel = (value) => {
   const cleaned = String(value || '').trim();
 
   if (!cleaned) return 'PM —';
-  return /^pm\s*/i.test(cleaned)
-    ? cleaned.toUpperCase()
-    : `PM ${cleaned}`;
+  const compact = cleaned.replace(/[\s_-]+/g, '');
+
+  if (/^\d+$/.test(compact)) return `PM${compact}`;
+
+  const pmMatch = compact.match(/^PM(\d+)$/i);
+  return pmMatch ? `PM${pmMatch[1]}` : cleaned.toUpperCase();
 };
 
 const recordTitle = (record) => {
   const form = record?.data || {};
-  const job = String(form.projectNumber || 'JOB —').trim();
   const session = String(form.sessionNumber || '—').trim();
-  return `${job} · ${pmLabel(form.markId)} · SESSION ${session}`;
+  return `${pmLabel(form.markId)} · SESSION ${session}`;
+};
+
+const formatArchiveDate = (value) => {
+  const date = new Date(value || 0);
+  if (Number.isNaN(date.getTime())) return 'Archive date unavailable';
+
+  return date.toLocaleString('en-AU', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 };
 
 function StaticRunningIndicator() {
@@ -167,121 +220,102 @@ function StaticRunningIndicator() {
   );
 }
 
-function FolderHeader({
-  eyebrow,
-  title,
-  subtitle,
-  count,
-  open,
-  onPress,
-  tone = 'gold',
-  compact = false,
-}) {
-  const completeTone = tone === 'green';
-  const photoTone = tone === 'blue';
+const WORKFLOW_PAGES = {
+  start: {
+    eyebrow: 'FIELD SETUP',
+    title: '1 · Start New Session',
+    subtitle: 'Create the booking record, checks and start photos.',
+    icon: 'play-circle-outline',
+    color: '#9A6A13',
+    background: '#FFF3D9',
+  },
+  end: {
+    eyebrow: 'ACTIVE FIELD SESSIONS',
+    title: '2 · Ready to End',
+    subtitle: 'Finish sessions after the static observation is complete.',
+    icon: 'stop-circle-outline',
+    color: '#9A6A13',
+    background: '#FFF3D9',
+  },
+  review: {
+    eyebrow: 'OFFICE REVIEW',
+    title: '3 · Review and Complete',
+    subtitle: 'Check filenames, correct details and generate the final PDF.',
+    icon: 'checkmark-circle-outline',
+    color: GREEN,
+    background: '#DFF3E6',
+  },
+  archive: {
+    eyebrow: 'FINISHED RECORDS',
+    title: '4 · Saved Days',
+    subtitle: 'Local daily folders ready to review or upload.',
+    icon: 'folder-outline',
+    color: '#9A6A13',
+    background: '#FFF3D9',
+  },
+  photos: {
+    eyebrow: 'FIELD PHOTO ARCHIVE',
+    title: '5 · Photo Storage',
+    subtitle: 'Booking photos, session stamps and metadata.',
+    icon: 'images-outline',
+    color: BLUE,
+    background: '#DCEFF7',
+  },
+};
+
+function WorkflowPageHeader({ tab, count }) {
+  const page = WORKFLOW_PAGES[tab];
 
   return (
+    <View style={styles.pageHeader}>
+      <View
+        style={[styles.pageHeaderIcon, { backgroundColor: page.background }]}
+      >
+        <Ionicons name={page.icon} size={25} color={page.color} />
+      </View>
+
+      <View style={styles.pageHeaderCopy}>
+        <Text style={[styles.pageHeaderEyebrow, { color: page.color }]}>
+          {page.eyebrow}
+        </Text>
+        <Text style={styles.pageHeaderTitle}>{page.title}</Text>
+        <Text style={styles.pageHeaderSubtitle}>
+          {page.subtitle}
+        </Text>
+      </View>
+
+      {typeof count === 'number' ? (
+        <View
+          style={[
+            styles.pageHeaderCount,
+            { backgroundColor: page.background },
+          ]}
+        >
+          <Text style={[styles.pageHeaderCountText, { color: page.color }]}>
+            {count}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function DateGroupHeader({ group, open, onPress }) {
+  return (
     <TouchableOpacity
-      style={[
-        styles.folderHeader,
-        completeTone && styles.folderHeaderComplete,
-        photoTone && styles.folderHeaderPhoto,
-        compact && styles.folderHeaderCompact,
-      ]}
-      activeOpacity={0.84}
+      style={styles.dateGroupHeader}
+      activeOpacity={0.82}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityState={{ expanded: open }}
     >
-      <View
-        style={[
-          styles.folderGlyph,
-          completeTone && styles.folderGlyphComplete,
-          photoTone && styles.folderGlyphPhoto,
-          compact && styles.folderGlyphCompact,
-        ]}
-      >
-        <View
-          style={[
-            styles.folderTab,
-            photoTone && styles.folderTabPhoto,
-            compact && styles.folderTabCompact,
-          ]}
-        />
-        <View
-          style={[
-            styles.folderBody,
-            photoTone && styles.folderBodyPhoto,
-            compact && styles.folderBodyCompact,
-          ]}
-        />
-      </View>
-
-      <View style={styles.folderCopy}>
-        {eyebrow ? (
-          <Text
-            style={[
-              styles.folderEyebrow,
-              completeTone && styles.greenText,
-              photoTone && styles.blueText,
-              compact && styles.folderEyebrowCompact,
-            ]}
-          >
-            {eyebrow}
-          </Text>
-        ) : null}
-
-        <Text
-          style={[
-            styles.folderTitle,
-            compact && styles.folderTitleCompact,
-          ]}
-          numberOfLines={compact ? 3 : undefined}
-        >
-          {title}
-        </Text>
-
-        <Text
-          style={[
-            styles.folderSubtitle,
-            compact && styles.folderSubtitleCompact,
-          ]}
-          numberOfLines={compact ? 1 : undefined}
-          adjustsFontSizeToFit={compact}
-          minimumFontScale={0.72}
-        >
-          {subtitle}
+      <View style={styles.dateGroupCopy}>
+        <Text style={styles.dateHeading}>{group.label}</Text>
+        <Text style={styles.dateGroupCount}>
+          {group.records.length} session{group.records.length === 1 ? '' : 's'}
         </Text>
       </View>
-
-      <View
-        style={[
-          styles.countBadge,
-          completeTone && styles.countBadgeComplete,
-          photoTone && styles.countBadgePhoto,
-          compact && styles.countBadgeCompact,
-        ]}
-      >
-        <Text
-          style={[
-            styles.countText,
-            completeTone && styles.countTextComplete,
-            photoTone && styles.countTextPhoto,
-            compact && styles.countTextCompact,
-          ]}
-        >
-          {count}
-        </Text>
-      </View>
-
-      <Text
-        style={[
-          styles.folderChevron,
-          compact && styles.folderChevronCompact,
-        ]}
-      >
-        {open ? '⌄' : '›'}
-      </Text>
+      <Text style={styles.dateGroupChevron}>{open ? '⌃' : '⌄'}</Text>
     </TouchableOpacity>
   );
 }
@@ -291,27 +325,49 @@ export default function SE14InProgressScreen({
   activeJob,
   startSession,
   openRecord,
+  archiveRecord,
+  restoreRecord,
   deleteRecord,
+  editSessionNumbers,
+  uploadDay,
   goBack,
+  accountProfile,
   backLabel = 'Forms',
 }) {
   const insets = useSafeAreaInsets();
-  const [endOpen, setEndOpen] = useState(false);
-  const [completeOpen, setCompleteOpen] = useState(false);
-  const [photosOpen, setPhotosOpen] = useState(false);
+  const scrollRef = useRef(null);
+  const tabScrollOffsets = useRef({});
+  const [reviewSort, setReviewSort] = useState('newest');
+  const [openCompletedGroups, setOpenCompletedGroups] = useState({});
+  const [openArchivedGroups, setOpenArchivedGroups] = useState({});
   const [photoGrouping, setPhotoGrouping] = useState('pm');
   const [openPhotoGroups, setOpenPhotoGroups] = useState({});
   const [exportingKey, setExportingKey] = useState(null);
+  const [deleteCandidate, setDeleteCandidate] = useState(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
+  const [deletingRecord, setDeletingRecord] = useState(false);
+  const [sessionNumberGroup, setSessionNumberGroup] = useState(null);
+  const [activeWorkflowTab, setActiveWorkflowTab] = useState('start');
+  const {
+    preparation: dayPreparation,
+    uploadingDayKey,
+    uploadArchivedDay,
+  } = useSE14DayPreparation({
+    initials: profileInitials(accountProfile),
+    onReady: uploadDay,
+    recordTitle,
+  });
 
-  useFocusEffect(
-    useCallback(() => {
-      setEndOpen(false);
-      setCompleteOpen(false);
-      setPhotosOpen(false);
-      setOpenPhotoGroups({});
-      setPhotoGrouping('pm');
-    }, [])
-  );
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({
+        y: tabScrollOffsets.current[activeWorkflowTab] || 0,
+        animated: false,
+      });
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [activeWorkflowTab]);
 
   const endSessions = useMemo(
     () => records.filter((record) => record.status === 'in_progress'),
@@ -329,9 +385,45 @@ export default function SE14InProgressScreen({
   );
 
   const completedGroups = useMemo(
-    () => groupCompletedByDate(completedSessions),
-    [completedSessions]
+    () => groupCompletedByDate(completedSessions, reviewSort),
+    [completedSessions, reviewSort]
   );
+
+  const archivedSessions = useMemo(
+    () =>
+      records
+        .filter((record) => record.status === 'archived')
+        .sort(
+          (left, right) =>
+            new Date(right.archivedAt || 0).getTime() -
+            new Date(left.archivedAt || 0).getTime()
+        ),
+    [records]
+  );
+
+  const archivedGroups = useMemo(
+    () => groupSE14ArchivedRecords(archivedSessions),
+    [archivedSessions]
+  );
+  const currentRound = useMemo(
+    () => getSE14CurrentRound(records),
+    [records]
+  );
+
+  useEffect(() => {
+    setOpenCompletedGroups((current) => {
+      const validKeys = new Set(completedGroups.map((group) => group.key));
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([key]) => validKeys.has(key))
+      );
+
+      if (!Object.keys(next).length && completedGroups[0]) {
+        next[completedGroups[0].key] = true;
+      }
+
+      return next;
+    });
+  }, [completedGroups]);
 
   const storedPhotos = useMemo(
     () => collectSE14Photos(records),
@@ -350,24 +442,76 @@ export default function SE14InProgressScreen({
     }));
   };
 
-  const closePhotoStorage = () => {
-    setPhotosOpen(false);
-    setOpenPhotoGroups({});
+  const toggleCompletedGroup = (key) => {
+    setOpenCompletedGroups((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
+  };
+
+  const toggleArchivedGroup = (key) => {
+    setOpenArchivedGroups((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
+  };
+
+  const requestPermanentDelete = (record) => {
+    setDeleteCandidate(record);
+    setDeleteConfirmation('');
+  };
+
+  const closePermanentDelete = () => {
+    if (deletingRecord) return;
+    setDeleteCandidate(null);
+    setDeleteConfirmation('');
+  };
+
+  const confirmPermanentDelete = async () => {
+    if (
+      !deleteCandidate ||
+      deleteConfirmation.trim() !== 'DELETE' ||
+      deletingRecord
+    ) {
+      return;
+    }
+
+    setDeletingRecord(true);
+
+    try {
+      const deleted = await deleteRecord?.(deleteCandidate.id);
+      if (deleted) {
+        setDeleteCandidate(null);
+        setDeleteConfirmation('');
+      }
+    } finally {
+      setDeletingRecord(false);
+    }
   };
 
   const openSessionRecord = (recordId) => {
-    closePhotoStorage();
     openRecord(recordId);
   };
 
-  const leaveSessions = () => {
-    closePhotoStorage();
-    goBack();
+  const openWorkflowTab = (key) => {
+    setActiveWorkflowTab(key);
   };
 
   const beginSession = () => {
-    closePhotoStorage();
-    startSession();
+    if (!currentRound.shouldSuggestNext) {
+      startSession?.({ roundMode: 'current' });
+      return;
+    }
+
+    Alert.alert(
+      'Continue this field round?',
+      `Round ${currentRound.sequence} · ${currentRound.label} began several hours ago. Choose where the new session belongs.`,
+      [
+        { text: `Continue Round ${currentRound.sequence}`, onPress: () => startSession?.({ roundMode: 'current' }) },
+        { text: `Start Round ${currentRound.sequence + 1}`, onPress: () => startSession?.({ roundMode: 'next' }) },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
   };
 
   const exportPhotos = async (photos, scopeLabel, key) => {
@@ -380,6 +524,7 @@ export default function SE14InProgressScreen({
         photos,
         jobNumber: activeJob?.number,
         scopeLabel,
+        initials: profileInitials(accountProfile),
       });
     } catch (error) {
       Alert.alert(
@@ -394,6 +539,12 @@ export default function SE14InProgressScreen({
   const jobNumber = activeJob?.number || 'No active job';
   const jobName =
     activeJob?.name || 'Select a job before starting GNSS';
+  const activeWorkflowCount = {
+    end: endSessions.length,
+    review: completedSessions.length,
+    archive: archivedSessions.length,
+    photos: storedPhotos.length,
+  }[activeWorkflowTab];
 
   return (
     <View style={styles.container}>
@@ -403,231 +554,199 @@ export default function SE14InProgressScreen({
         backgroundColor="transparent"
       />
 
-      <ImageBackground
-        source={require('../../assets/topo-bg.png')}
-        style={[styles.hero, { paddingTop: insets.top }]}
-        imageStyle={styles.heroImage}
-      >
-        <View style={styles.heroShade} />
-
-        <View style={styles.topRow}>
-          <AppBackButton
-            label={backLabel}
-            onPress={leaveSessions}
-            style={styles.topAction}
-          />
-
-          <Text style={styles.formCode}>SE-14 · GNSS</Text>
-
-          <View style={styles.topAction} />
-        </View>
-
-        <Text style={styles.title}>GNSS Static Sessions</Text>
-
-        <View style={styles.lockedJob}>
-          <View style={styles.lockIcon}>
-            <Text style={styles.lockIconText}>✓</Text>
-          </View>
-
-          <View style={styles.lockedJobCopy}>
-            <Text style={styles.lockedLabel}>
-              CURRENT JOB · LOCKED TO FORMS
-            </Text>
-            <Text style={styles.lockedNumber}>{jobNumber}</Text>
-            <Text style={styles.lockedName} numberOfLines={1}>
-              {jobName}
-            </Text>
-          </View>
-
-          <Text style={styles.lockedStatus}>LOCKED</Text>
-        </View>
-      </ImageBackground>
+      <SE14WorkspaceHeader
+        topInset={insets.top}
+        jobNumber={jobNumber}
+        jobName={jobName}
+        onBack={goBack}
+        backLabel={backLabel}
+      />
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: 44 + insets.bottom },
+          { paddingBottom: 28 },
         ]}
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
+        scrollEventThrottle={16}
+        onScroll={(event) => {
+          tabScrollOffsets.current[activeWorkflowTab] =
+            event.nativeEvent.contentOffset.y;
+        }}
       >
-        <View style={styles.firstStepsSection}>
-          <View style={styles.firstStepsRow}>
-            <View style={styles.firstStepColumn}>
-              <View style={styles.firstStepEyebrowSlot}>
-                <Text
-                  style={styles.firstStepEyebrow}
-                  numberOfLines={1}
-                >
-                  ONE-TIME SETUP
+        <WorkflowPageHeader
+          tab={activeWorkflowTab}
+          count={activeWorkflowCount}
+        />
+        {activeWorkflowTab === 'start' ? (
+          <View style={styles.tabBody}>
+            <SE14RoundStatusCard
+              round={currentRound}
+              onStartNext={() => startSession?.({ roundMode: 'next' })}
+            />
+            <TouchableOpacity
+              style={[styles.startCard, styles.startTabCard]}
+              activeOpacity={0.86}
+              onPress={beginSession}
+              disabled={!activeJob}
+            >
+              <View style={styles.startIcon}>
+                <Text style={styles.startIconText}>＋</Text>
+              </View>
+
+              <View style={styles.startCopy}>
+                <Text style={styles.startEyebrow}>NEW SE-14 RECORD</Text>
+                <Text style={styles.startTitle}>Begin Session</Text>
+                <Text style={styles.startSubtitle}>
+                  Enter the setup, checks and start photos.
                 </Text>
               </View>
 
+              <Text style={styles.startArrow}>›</Text>
+            </TouchableOpacity>
+
+            {endSessions.length > 0 ? (
               <TouchableOpacity
-                style={[styles.startCard, styles.firstStepCard]}
-                activeOpacity={0.86}
-                onPress={beginSession}
-                disabled={!activeJob}
+                style={styles.activeSessionCallout}
+                activeOpacity={0.84}
+                onPress={() => openWorkflowTab('end')}
               >
-                <View style={styles.startIcon}>
-                  <Text style={styles.startIconText}>＋</Text>
-                </View>
-
-                <View style={styles.startCopy}>
-                  <Text style={styles.startTitle}>
-                    1 · Start New Session
-                  </Text>
-
-                  <Text
-                    style={styles.startSubtitle}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.72}
-                  >
-                    Record setup, checks and start photos
-                  </Text>
-                </View>
-
-                <Text style={styles.startArrow}>›</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.firstStepColumn}>
-              <View style={styles.firstStepEyebrowSlot}>
-                {endSessions.length > 0 ? (
+                <View style={styles.activeSessionCopy}>
                   <StaticRunningIndicator />
-                ) : null}
-              </View>
-
-              <View
-                style={[
-                  styles.folderShell,
-                  styles.firstStepFolderShell,
-                ]}
-              >
-                <FolderHeader
-                  eyebrow={null}
-                  title="2 · Ready to End Session"
-                  subtitle="Open sessions waiting to be finished"
-                  count={endSessions.length}
-                  open={endOpen}
-                  onPress={() =>
-                    setEndOpen((current) => !current)
-                  }
-                  compact
+                  <Text style={styles.activeSessionTitle}>
+                    {endSessions.length} session
+                    {endSessions.length === 1 ? '' : 's'} ready for later
+                  </Text>
+                  <Text style={styles.activeSessionText}>
+                    Open End when the static observation is finished.
+                  </Text>
+                </View>
+                <Text style={styles.activeSessionArrow}>›</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.startGuidance}>
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={22}
+                  color={GREEN}
                 />
+                <View style={styles.startGuidanceCopy}>
+                  <Text style={styles.startGuidanceTitle}>
+                    Ready for field work
+                  </Text>
+                  <Text style={styles.startGuidanceText}>
+                    Your active job is applied automatically to the new form.
+                  </Text>
+                </View>
               </View>
-            </View>
+            )}
           </View>
+        ) : null}
 
-          {endOpen ? (
-            <View style={styles.firstStepsExpanded}>
-              <View style={styles.folderContent}>
-                {endSessions.length === 0 ? (
-                  <View style={styles.emptyState}>
-                    <Text style={styles.emptyTitle}>
-                      No sessions waiting
-                    </Text>
-                    <Text style={styles.emptyText}>
-                      Complete Start Session and it will move here
-                      automatically.
-                    </Text>
-                  </View>
-                ) : (
-                  endSessions.map((record) => {
-                    const progress = getSE14RequirementProgress(
-                      record.data,
-                      SE14_END_REQUIREMENTS
-                    );
-
-                    const percent = progress.total
-                      ? progress.complete / progress.total
-                      : 0;
-
-                    return (
-                      <TouchableOpacity
-                        key={record.id}
-                        style={styles.sessionCard}
-                        activeOpacity={0.82}
-                        onPress={() =>
-                          openSessionRecord(record.id)
-                        }
-                      >
-                        <View style={styles.sessionIdentityRow}>
-                          <View style={styles.sessionIdentityCell}>
-                            <Text style={styles.sessionIdentityLabel}>
-                              JOB NUMBER
-                            </Text>
-                            <Text style={styles.sessionIdentityValue}>
-                              {record.data.projectNumber || '—'}
-                            </Text>
-                          </View>
-
-                          <View style={styles.sessionIdentityCell}>
-                            <Text style={styles.sessionIdentityLabel}>
-                              PM / MARK
-                            </Text>
-                            <Text style={styles.sessionIdentityValue}>
-                              {pmLabel(record.data.markId)}
-                            </Text>
-                          </View>
-
-                          <View
-                            style={styles.sessionIdentityCellSmall}
-                          >
-                            <Text style={styles.sessionIdentityLabel}>
-                              SESSION
-                            </Text>
-                            <Text style={styles.sessionIdentityValue}>
-                              {record.data.sessionNumber || '—'}
-                            </Text>
-                          </View>
-
-                          <Text style={styles.sessionChevron}>›</Text>
-                        </View>
-
-                        <View style={styles.progressRow}>
-                          <View style={styles.progressTrack}>
-                            <View
-                              style={[
-                                styles.progressFill,
-                                {
-                                  width: `${Math.round(
-                                    percent * 100
-                                  )}%`,
-                                },
-                              ]}
-                            />
-                          </View>
-
-                          <Text style={styles.progressText}>
-                            {progress.complete}/{progress.total}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })
-                )}
+        {activeWorkflowTab === 'end' ? (
+          <View style={styles.tabBody}>
+            {endSessions.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>No sessions waiting</Text>
+                <Text style={styles.emptyText}>
+                  Complete Start Session and it will appear here automatically.
+                </Text>
               </View>
-            </View>
-          ) : null}
-        </View>
+            ) : (
+              endSessions.map((record) => {
+                const progress = getSE14RequirementProgress(
+                  record.data,
+                  SE14_END_REQUIREMENTS
+                );
+                const percent = progress.total
+                  ? progress.complete / progress.total
+                  : 0;
 
-        <View style={styles.folderShell}>
-          <FolderHeader
-            eyebrow="OFFICE REVIEW"
-            title="3 · Review and Complete"
-            subtitle="Check, add data filenames, export or correct"
-            count={completedSessions.length}
-            open={completeOpen}
-            onPress={() =>
-              setCompleteOpen((current) => !current)
-            }
-            tone="green"
-          />
+                return (
+                  <TouchableOpacity
+                    key={record.id}
+                    style={styles.sessionCard}
+                    activeOpacity={0.82}
+                    onPress={() => openSessionRecord(record.id)}
+                  >
+                    <View style={styles.sessionIdentityRow}>
+                      <View style={styles.sessionIdentityCell}>
+                        <Text style={styles.sessionIdentityLabel}>PM / MARK</Text>
+                        <Text style={styles.sessionIdentityValue}>
+                          {pmLabel(record.data.markId)}
+                        </Text>
+                      </View>
 
-          {completeOpen ? (
-            <View style={styles.folderContent}>
+                      <View style={styles.sessionIdentityCellSmall}>
+                        <Text style={styles.sessionIdentityLabel}>SESSION</Text>
+                        <Text style={styles.sessionIdentityValue}>
+                          {record.data.sessionNumber || '—'}
+                        </Text>
+                      </View>
+
+                      <Text style={styles.sessionChevron}>›</Text>
+                    </View>
+
+                    <View style={styles.progressRow}>
+                      <View style={styles.progressTrack}>
+                        <View
+                          style={[
+                            styles.progressFill,
+                            { width: `${Math.round(percent * 100)}%` },
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.progressText}>
+                        {progress.complete}/{progress.total}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </View>
+        ) : null}
+
+        {activeWorkflowTab === 'review' ? (
+          <View style={styles.tabBody}>
+              <View style={styles.reviewSortBar}>
+                <Text style={styles.reviewSortLabel}>SORT</Text>
+                {[
+                  ['newest', 'NEWEST'],
+                  ['oldest', 'OLDEST'],
+                  ['session', 'SESSION #'],
+                ].map(([value, label]) => (
+                  <TouchableOpacity
+                    key={value}
+                    style={[
+                      styles.reviewSortButton,
+                      reviewSort === value && styles.reviewSortButtonActive,
+                    ]}
+                    activeOpacity={0.82}
+                    onPress={() => {
+                      setReviewSort(value);
+                      setOpenCompletedGroups({});
+                    }}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: reviewSort === value }}
+                  >
+                    <Text
+                      style={[
+                        styles.reviewSortButtonText,
+                        reviewSort === value && styles.reviewSortButtonTextActive,
+                      ]}
+                    >
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
               {completedGroups.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.emptyTitle}>
@@ -640,68 +759,95 @@ export default function SE14InProgressScreen({
                 </View>
               ) : (
                 completedGroups.map((group) => (
-                  <View key={group.key}>
-                    <Text style={styles.dateHeading}>
-                      {group.label}
-                    </Text>
+                  <View key={group.key} style={styles.dateGroupCard}>
+                    <DateGroupHeader
+                      group={group}
+                      open={Boolean(openCompletedGroups[group.key])}
+                      onPress={() => toggleCompletedGroup(group.key)}
+                    />
 
-                    {group.records.map((record) => (
-                      <TouchableOpacity
-                        key={record.id}
-                        style={styles.completedCard}
-                        activeOpacity={0.82}
-                        onPress={() =>
-                          openSessionRecord(record.id)
-                        }
-                      >
-                        <View style={styles.completedCheck}>
-                          <Text style={styles.completedCheckText}>
-                            ✓
-                          </Text>
-                        </View>
+                    {openCompletedGroups[group.key] ? (
+                      <View style={styles.dateGroupContent}>
+                        {group.records.map((record) => (
+                          <View key={record.id} style={styles.completedCard}>
+                            <TouchableOpacity
+                              style={styles.completedCardMain}
+                              activeOpacity={0.82}
+                              onPress={() => openSessionRecord(record.id)}
+                            >
+                              <View style={styles.completedCheck}>
+                                <Text style={styles.completedCheckText}>✓</Text>
+                              </View>
 
-                        <View style={styles.completedCopy}>
-                          <Text style={styles.completedTitle}>
-                            {recordTitle(record)}
-                          </Text>
-                          <Text style={styles.completedMeta}>
-                            {record.status === 'complete'
-                              ? 'EXPORTED'
-                              : 'REVIEW REQUIRED'}{' '}
-                            · Ended {record.data.endDate || '—'} ·{' '}
-                            {record.data.endTime || '—'}
-                          </Text>
-                        </View>
+                              <View style={styles.completedCopy}>
+                                <Text style={styles.completedTitle}>
+                                  {recordTitle(record)}
+                                </Text>
+                                <Text style={styles.completedMeta}>
+                                  {record.status === 'complete'
+                                    ? 'EXPORTED'
+                                    : 'REVIEW REQUIRED'}{' '}
+                                  · Ended {record.data.endDate || '—'} ·{' '}
+                                  {record.data.endTime || '—'}
+                                </Text>
+                              </View>
 
-                        <Text style={styles.completedArrow}>›</Text>
-                      </TouchableOpacity>
-                    ))}
+                              <Text style={styles.completedArrow}>›</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.archiveInlineButton}
+                              activeOpacity={0.82}
+                              onPress={() => record.status === 'complete' ? archiveRecord?.(record.id) : openSessionRecord(record.id)}
+                              accessibilityRole="button"
+                              accessibilityLabel={record.status === 'complete' ? `Move ${recordTitle(record)} into its saved day` : `Finish ${recordTitle(record)}`}
+                            >
+                              <Text style={styles.archiveInlineButtonText}>
+                                {record.status === 'complete' ? 'MOVE TO SAVED DAY' : 'OPEN TO FINISH'}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
                   </View>
                 ))
               )}
-            </View>
-          ) : null}
-        </View>
+          </View>
+        ) : null}
 
-        <View style={styles.folderShell}>
-          <FolderHeader
-            eyebrow="FIELD PHOTO ARCHIVE"
-            title="4 · Photo Storage"
-            subtitle="Booking-sheet photos, stamps and metadata"
-            count={storedPhotos.length}
-            open={photosOpen}
-            onPress={() => {
-              if (photosOpen) {
-                closePhotoStorage();
-              } else {
-                setPhotosOpen(true);
-              }
-            }}
-            tone="blue"
-          />
+        {activeWorkflowTab === 'archive' ? (
+          <View style={styles.tabBody}>
+              {archivedSessions.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyTitle}>No archived sessions</Text>
+                  <Text style={styles.emptyText}>
+                    Finish a reviewed session with Save to Day and it will be stored here on this phone, ready to upload when reception returns.
+                  </Text>
+                </View>
+              ) : (
+                archivedGroups.map((group) => (
+                  <SE14ArchiveDayGroup
+                    key={group.key}
+                    group={group}
+                    open={Boolean(openArchivedGroups[group.key])}
+                    uploadingKey={uploadingDayKey}
+                    onToggle={() => toggleArchivedGroup(group.key)}
+                    onUpload={uploadArchivedDay}
+                    onEditSessionNumbers={() => setSessionNumberGroup(group)}
+                    onOpenRecord={openSessionRecord}
+                    onRestore={(recordId) => restoreRecord?.(recordId)}
+                    onDelete={requestPermanentDelete}
+                    recordTitle={recordTitle}
+                    formatArchiveDate={formatArchiveDate}
+                  />
+                ))
+              )}
+          </View>
+        ) : null}
 
-          {photosOpen ? (
-            <View style={styles.folderContent}>
+        {activeWorkflowTab === 'photos' ? (
+          <View style={styles.tabBody}>
               {storedPhotos.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Text style={styles.emptyTitle}>
@@ -949,10 +1095,99 @@ export default function SE14InProgressScreen({
                   })}
                 </>
               )}
-            </View>
-          ) : null}
-        </View>
+          </View>
+        ) : null}
       </ScrollView>
+
+      <SE14WorkflowDock
+        activeTab={activeWorkflowTab}
+        bottomInset={insets.bottom}
+        counts={{
+          end: endSessions.length,
+          review: completedSessions.length,
+          archive: archivedSessions.length,
+          photos: storedPhotos.length,
+        }}
+        onSelect={openWorkflowTab}
+      />
+
+      <SE14DayPreparationOverlay preparation={dayPreparation} />
+
+      <SE14BulkSessionNumberEditor
+        group={sessionNumberGroup}
+        onClose={() => setSessionNumberGroup(null)}
+        onApply={editSessionNumbers}
+        recordTitle={recordTitle}
+      />
+
+      <Modal
+        visible={Boolean(deleteCandidate)}
+        transparent
+        animationType="fade"
+        onRequestClose={closePermanentDelete}
+      >
+        <KeyboardAvoidingView
+          style={styles.deleteModalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.deleteModalCard}>
+            <View style={styles.deleteModalIcon}>
+              <Text style={styles.deleteModalIconText}>!</Text>
+            </View>
+            <Text style={styles.deleteModalTitle}>
+              Permanently delete session?
+            </Text>
+            <Text style={styles.deleteModalRecord}>
+              {deleteCandidate ? recordTitle(deleteCandidate) : ''}
+            </Text>
+            <Text style={styles.deleteModalBody}>
+              This removes the locally stored GNSS record, its editable values, and its app-managed Start and End photo files. Copies already saved to iPhone Photos and files already sent to SharePoint are not deleted.
+            </Text>
+            <Text style={styles.deleteModalInstruction}>
+              Type DELETE to confirm permanent deletion.
+            </Text>
+            <TextInput
+              style={styles.deleteModalInput}
+              value={deleteConfirmation}
+              onChangeText={setDeleteConfirmation}
+              placeholder="DELETE"
+              placeholderTextColor="#94A3B8"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              editable={!deletingRecord}
+              returnKeyType="done"
+              onSubmitEditing={confirmPermanentDelete}
+            />
+            <View style={styles.deleteModalActions}>
+              <TouchableOpacity
+                style={styles.deleteModalCancel}
+                activeOpacity={0.82}
+                disabled={deletingRecord}
+                onPress={closePermanentDelete}
+              >
+                <Text style={styles.deleteModalCancelText}>CANCEL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.deleteModalConfirm,
+                  deleteConfirmation.trim() !== 'DELETE' &&
+                    styles.deleteModalConfirmDisabled,
+                ]}
+                activeOpacity={0.82}
+                disabled={
+                  deletingRecord ||
+                  deleteConfirmation.trim() !== 'DELETE'
+                }
+                onPress={confirmPermanentDelete}
+              >
+                <Text style={styles.deleteModalConfirmText}>
+                  {deletingRecord ? 'DELETING…' : 'DELETE FOREVER'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -981,7 +1216,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   topAction: {
-    width: 112,
+    width: 136,
     minHeight: 40,
     justifyContent: 'center',
   },
@@ -1075,6 +1310,128 @@ const styles = StyleSheet.create({
   content: {
     padding: 15,
     paddingBottom: 44,
+  },
+  pageHeader: {
+    minHeight: 94,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#DCE3E8',
+    backgroundColor: WHITE,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+  },
+  pageHeaderIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  pageHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  pageHeaderEyebrow: {
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 1.05,
+  },
+  pageHeaderTitle: {
+    color: NAVY,
+    fontSize: 18,
+    lineHeight: 21,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  pageHeaderSubtitle: {
+    color: MUTED_TEXT,
+    fontSize: 10.5,
+    lineHeight: 14,
+    marginTop: 3,
+  },
+  pageHeaderCount: {
+    minWidth: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 7,
+    marginLeft: 8,
+  },
+  pageHeaderCountText: {
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  tabBody: {
+    marginTop: 13,
+  },
+  startTabCard: {
+    flex: 0,
+    minHeight: 108,
+  },
+  activeSessionCallout: {
+    minHeight: 90,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#CFE2D6',
+    backgroundColor: '#F5FBF7',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingVertical: 13,
+    marginTop: 13,
+  },
+  activeSessionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  activeSessionTitle: {
+    color: NAVY,
+    fontSize: 14,
+    fontWeight: '900',
+    marginTop: 7,
+  },
+  activeSessionText: {
+    color: MUTED_TEXT,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 3,
+  },
+  activeSessionArrow: {
+    color: GREEN,
+    fontSize: 28,
+    marginLeft: 10,
+  },
+  startGuidance: {
+    minHeight: 76,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#DCE3E8',
+    backgroundColor: WHITE,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    marginTop: 13,
+  },
+  startGuidanceCopy: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 11,
+  },
+  startGuidanceTitle: {
+    color: NAVY,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  startGuidanceText: {
+    color: MUTED_TEXT,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 3,
   },
   workflowCard: {
     backgroundColor: WHITE,
@@ -1550,26 +1907,99 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '900',
   },
-  dateHeading: {
+  reviewSortBar: {
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#D6DFE5',
+    backgroundColor: WHITE,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 4,
+    gap: 3,
+    marginBottom: 10,
+  },
+  reviewSortLabel: {
     color: MUTED_TEXT,
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+    paddingHorizontal: 6,
+  },
+  reviewSortButton: {
+    flex: 1,
+    minHeight: 32,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  reviewSortButtonActive: {
+    backgroundColor: NAVY,
+  },
+  reviewSortButtonText: {
+    color: MUTED_TEXT,
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  reviewSortButtonTextActive: {
+    color: GOLD,
+  },
+  dateGroupCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D9E3E8',
+    backgroundColor: WHITE,
+    overflow: 'hidden',
+    marginBottom: 9,
+  },
+  dateGroupHeader: {
+    minHeight: 55,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    backgroundColor: '#F3F7F8',
+  },
+  dateGroupCopy: {
+    flex: 1,
+  },
+  dateHeading: {
+    color: NAVY,
     fontSize: 9,
     fontWeight: '900',
     letterSpacing: 1,
-    marginTop: 5,
-    marginBottom: 7,
-    marginLeft: 2,
+  },
+  dateGroupCount: {
+    color: MUTED_TEXT,
+    fontSize: 9,
+    marginTop: 3,
+  },
+  dateGroupChevron: {
+    color: GREEN,
+    fontSize: 21,
+    marginLeft: 8,
+  },
+  dateGroupContent: {
+    borderTopWidth: 1,
+    borderTopColor: '#DFE7EB',
+    backgroundColor: '#F8FAFB',
+    padding: 8,
   },
   completedCard: {
-    minHeight: 69,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#CFE6D7',
     backgroundColor: WHITE,
+    overflow: 'hidden',
+    marginBottom: 9,
+  },
+  completedCardMain: {
+    minHeight: 69,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 11,
-    marginBottom: 9,
   },
   completedCheck: {
     width: 32,
@@ -1603,6 +2033,20 @@ const styles = StyleSheet.create({
     color: GREEN,
     fontSize: 25,
     marginLeft: 6,
+  },
+  archiveInlineButton: {
+    minHeight: 36,
+    borderTopWidth: 1,
+    borderTopColor: '#E1E9E4',
+    backgroundColor: '#F4F8F5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  archiveInlineButtonText: {
+    color: '#4A6475',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.7,
   },
   photoArchiveToolbar: {
     flexDirection: 'row',
@@ -1789,5 +2233,108 @@ const styles = StyleSheet.create({
     color: MUTED_TEXT,
     fontSize: 9,
     marginTop: 4,
+  },
+  deleteModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(2,18,31,0.78)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  deleteModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E6B7B3',
+    backgroundColor: WHITE,
+    padding: 18,
+  },
+  deleteModalIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FEE4E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteModalIconText: {
+    color: '#B42318',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  deleteModalTitle: {
+    color: NAVY,
+    fontSize: 20,
+    lineHeight: 26,
+    fontWeight: '900',
+    marginTop: 12,
+  },
+  deleteModalRecord: {
+    color: '#B42318',
+    fontSize: 12,
+    fontWeight: '900',
+    marginTop: 4,
+  },
+  deleteModalBody: {
+    color: '#526273',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 12,
+  },
+  deleteModalInstruction: {
+    color: NAVY,
+    fontSize: 11,
+    fontWeight: '900',
+    marginTop: 14,
+  },
+  deleteModalInput: {
+    minHeight: 48,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: '#D3DCE3',
+    backgroundColor: '#F8FAFB',
+    color: NAVY,
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+    paddingHorizontal: 12,
+    marginTop: 7,
+  },
+  deleteModalActions: {
+    flexDirection: 'row',
+    gap: 9,
+    marginTop: 14,
+  },
+  deleteModalCancel: {
+    flex: 1,
+    minHeight: 45,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: '#CAD4DB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteModalCancelText: {
+    color: '#526273',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  deleteModalConfirm: {
+    flex: 1.35,
+    minHeight: 45,
+    borderRadius: 11,
+    backgroundColor: '#B42318',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteModalConfirmDisabled: {
+    opacity: 0.38,
+  },
+  deleteModalConfirmText: {
+    color: WHITE,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.35,
   },
 });

@@ -1,10 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import {
+  GRAPH_ROOT,
+  graphCollection as sharedGraphCollection,
+  graphRequest as sharedGraphRequest,
+} from '../../services/sync/graphClient';
+import { downloadAuthenticatedGraphFile } from '../../services/sync/graphFileTransfer';
 
-const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
 const TEAM_NAME = 'NorthGroup Schedule';
 const CACHE_PREFIX = 'northgroup_one_teams_channel_cache_v2';
-const MEDIA_CACHE_DIRECTORY = `${FileSystem.cacheDirectory}northgroup-feed-media/`;
+const MEDIA_DIRECTORY = `${FileSystem.documentDirectory || FileSystem.cacheDirectory}northgroup-feed-media/`;
+const LEGACY_MEDIA_CACHE_DIRECTORY = `${FileSystem.cacheDirectory}northgroup-feed-media/`;
 
 export const TEAMS_CHANNELS = {
   northgroup: {
@@ -29,6 +35,48 @@ const safePathPart = (value) => (
   String(value || '').replace(/[^A-Za-z0-9_-]/g, '')
 );
 
+export const extractHostedContentIds = (html = '') => {
+  const ids = [];
+  const pattern = /hostedContents\/([^/?"'<>\s]+)\/\$value/gi;
+  let match = pattern.exec(String(html || ''));
+  while (match) {
+    let id = match[1];
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      // Microsoft normally supplies a plain hosted-content id.
+    }
+    if (id && !ids.includes(id)) ids.push(id);
+    match = pattern.exec(String(html || ''));
+  }
+  return ids;
+};
+
+export const feedImageExtension = (mimeType = '') => {
+  const value = String(mimeType || '').toLowerCase();
+  if (value.includes('png')) return 'png';
+  if (value.includes('gif')) return 'gif';
+  if (value.includes('webp')) return 'webp';
+  if (value.includes('heic')) return 'heic';
+  if (value.includes('heif')) return 'heif';
+  return 'jpg';
+};
+
+export const feedMediaFileName = ({
+  accountId,
+  channelKey,
+  messageId,
+  mimeType,
+}) => [
+  safePathPart(accountId || 'employee'),
+  '-',
+  safePathPart(channelKey || 'channel'),
+  '-',
+  safePathPart(messageId || 'message'),
+  '.',
+  feedImageExtension(mimeType),
+].join('');
+
 const graphErrorMessage = (status, body) => {
   const message = body?.error?.message || '';
   if (status === 401) return 'Your Microsoft session needs to be refreshed.';
@@ -39,48 +87,24 @@ const graphErrorMessage = (status, body) => {
   return message || `Microsoft request failed (${status}).`;
 };
 
-const graphRequest = async (url, accessToken, options = {}) => {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
-    },
-  });
+const channelSyncConfig = (operation) => ({
+  feature: 'teamsChannels',
+  operation,
+  errorMessage: graphErrorMessage,
+});
 
-  const text = await response.text();
-  let body = null;
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = null;
-    }
-  }
+const graphRequest = (url, accessToken, options = {}) => sharedGraphRequest(
+  url,
+  accessToken,
+  options,
+  channelSyncConfig(`${String(options.method || 'GET').toUpperCase()} Teams channel`),
+);
 
-  if (!response.ok) {
-    const error = new Error(graphErrorMessage(response.status, body));
-    error.status = response.status;
-    throw error;
-  }
-
-  return body;
-};
-
-const graphCollection = async (url, accessToken) => {
-  const values = [];
-  let nextUrl = url;
-
-  while (nextUrl) {
-    const body = await graphRequest(nextUrl, accessToken);
-    values.push(...(Array.isArray(body?.value) ? body.value : []));
-    nextUrl = body?.['@odata.nextLink'] || '';
-  }
-
-  return values;
-};
+const graphCollection = (url, accessToken) => sharedGraphCollection(
+  url,
+  accessToken,
+  channelSyncConfig('Load Teams channel'),
+);
 
 const decodeEntities = (value) => String(value || '')
   .replace(/&nbsp;/gi, ' ')
@@ -133,9 +157,13 @@ const normaliseReply = (message) => {
   };
 };
 
-const normaliseMessage = (message, channelKey, imageUri = '') => {
+const normaliseMessage = (message, channelKey, image = {}) => {
   const sender = messageSender(message);
   const text = htmlToText(message?.body?.content);
+  const media = typeof image === 'string' ? { uri: image } : (image || {});
+  const imageExpected = media.expected ?? (
+    messageContainsImage(message) || Boolean(media.uri)
+  );
   const replies = (Array.isArray(message?.replies) ? message.replies : [])
     .filter((reply) => !reply?.deletedDateTime)
     .map(normaliseReply)
@@ -149,7 +177,7 @@ const normaliseMessage = (message, channelKey, imageUri = '') => {
     channelKey,
     senderId: sender.id,
     senderName: sender.name,
-    text: text || (imageUri ? '' : 'Shared an update'),
+    text: text || (imageExpected ? '' : 'Shared an update'),
     subject: htmlToText(message?.subject),
     createdAt: message?.createdDateTime || message?.lastModifiedDateTime || '',
     editedAt: message?.lastEditedDateTime || '',
@@ -157,7 +185,10 @@ const normaliseMessage = (message, channelKey, imageUri = '') => {
     replies,
     replyCount: replies.length,
     attachmentCount: Array.isArray(message?.attachments) ? message.attachments.length : 0,
-    imageUri,
+    imageExpected,
+    imageUri: media.uri || '',
+    imageMimeType: media.mimeType || '',
+    hostedContentId: media.hostedContentId || '',
   };
 };
 
@@ -185,10 +216,10 @@ const writeCachedChannelMessages = async ({ accountId, channelKey, messages }) =
   }
 };
 
-const ensureMediaCache = async () => {
-  const info = await FileSystem.getInfoAsync(MEDIA_CACHE_DIRECTORY);
+const ensureMediaDirectory = async () => {
+  const info = await FileSystem.getInfoAsync(MEDIA_DIRECTORY);
   if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, { intermediates: true });
+    await FileSystem.makeDirectoryAsync(MEDIA_DIRECTORY, { intermediates: true });
   }
 };
 
@@ -196,60 +227,170 @@ const messageContainsImage = (message) => (
   /<img\b/i.test(String(message?.body?.content || ''))
 );
 
+const existingMediaUri = async (uri) => {
+  const value = String(uri || '');
+  if (!value) return '';
+  try {
+    const info = await FileSystem.getInfoAsync(value);
+    return info.exists && Number(info.size || 0) > 0 ? value : '';
+  } catch {
+    return '';
+  }
+};
+
+const mediaDestination = ({
+  accountId,
+  channelKey,
+  messageId,
+  mimeType,
+}) => `${MEDIA_DIRECTORY}${feedMediaFileName({
+  accountId,
+  channelKey,
+  messageId,
+  mimeType,
+})}`;
+
+const persistFeedImage = async ({
+  sourceUri,
+  accountId,
+  channelKey,
+  messageId,
+  mimeType,
+}) => {
+  const availableSource = await existingMediaUri(sourceUri);
+  if (!availableSource) return '';
+
+  await ensureMediaDirectory();
+  const destination = mediaDestination({
+    accountId,
+    channelKey,
+    messageId,
+    mimeType,
+  });
+  if (availableSource === destination) return destination;
+
+  const existingDestination = await existingMediaUri(destination);
+  if (existingDestination) return existingDestination;
+
+  await FileSystem.copyAsync({ from: availableSource, to: destination });
+  return destination;
+};
+
 const loadHostedImage = async ({
   accessToken,
   accountId,
   channel,
   message,
+  existingMessage,
 }) => {
-  if (!messageContainsImage(message)) return '';
+  const expected = messageContainsImage(message) || Boolean(existingMessage?.imageExpected);
+  if (!expected) return { expected: false, uri: '' };
+
+  const fallbackUri = await existingMediaUri(existingMessage?.imageUri);
+  const fallbackMimeType = existingMessage?.imageMimeType || 'image/jpeg';
+
+  if (fallbackUri) {
+    try {
+      const durableUri = await persistFeedImage({
+        sourceUri: fallbackUri,
+        accountId,
+        channelKey: channel.key,
+        messageId: message.id,
+        mimeType: fallbackMimeType,
+      });
+      if (durableUri) {
+        return {
+          expected: true,
+          uri: durableUri,
+          mimeType: fallbackMimeType,
+          hostedContentId: existingMessage?.hostedContentId || '',
+        };
+      }
+    } catch {
+      // Continue to Microsoft so a failed local migration can repair itself.
+    }
+  }
 
   try {
-    const hostedContents = await graphCollection(
-      `${GRAPH_ROOT}/teams/${encodePath(channel.teamId)}/channels/${encodePath(channel.id)}/messages/${encodePath(message.id)}/hostedContents`,
-      accessToken,
+    let hostedContents = [];
+    try {
+      hostedContents = await graphCollection(
+        `${GRAPH_ROOT}/teams/${encodePath(channel.teamId)}/channels/${encodePath(channel.id)}/messages/${encodePath(message.id)}/hostedContents`,
+        accessToken,
+      );
+    } catch {
+      // The id embedded in the message body can still restore the photo when
+      // listing hosted content is temporarily unavailable.
+    }
+    const bodyIds = extractHostedContentIds(message?.body?.content);
+    const hostedById = new Map(
+      hostedContents.filter((item) => item?.id).map((item) => [item.id, item]),
     );
-    // Microsoft intentionally returns contentType as null when hosted content
-    // is listed. The body image reference tells us that the first hosted item
-    // is the inline image we need to download.
-    const image = hostedContents[0];
-    if (!image?.id) return '';
+    const candidates = [
+      ...bodyIds.map((id) => hostedById.get(id) || ({ id })),
+      ...(existingMessage?.hostedContentId
+        ? [hostedById.get(existingMessage.hostedContentId)
+          || { id: existingMessage.hostedContentId }]
+        : []),
+      ...hostedContents.filter((item) => item?.id),
+    ].filter((item, index, values) => (
+      values.findIndex((candidate) => candidate.id === item.id) === index
+    ));
+    const image = candidates[0];
+    if (!image?.id) {
+      return { expected: true, uri: fallbackUri, mimeType: fallbackMimeType };
+    }
 
-    await ensureMediaCache();
-    const extension = 'jpg';
-    const destination = [
-      MEDIA_CACHE_DIRECTORY,
-      safePathPart(accountId),
-      '-',
-      safePathPart(channel.key),
-      '-',
-      safePathPart(message.id),
-      '-',
-      safePathPart(image.id),
-      '.',
-      extension,
-    ].join('');
+    const mimeType = image.contentType || fallbackMimeType || 'image/jpeg';
+    await ensureMediaDirectory();
+    const destination = mediaDestination({
+      accountId,
+      channelKey: channel.key,
+      messageId: message.id,
+      mimeType,
+    });
     const cached = await FileSystem.getInfoAsync(destination);
-    if (cached.exists && Number(cached.size || 0) > 0) return destination;
+    if (cached.exists && Number(cached.size || 0) > 0) {
+      return {
+        expected: true,
+        uri: destination,
+        mimeType,
+        hostedContentId: image.id,
+      };
+    }
 
-    const result = await FileSystem.downloadAsync(
-      `${GRAPH_ROOT}/teams/${encodePath(channel.teamId)}/channels/${encodePath(channel.id)}/messages/${encodePath(message.id)}/hostedContents/${encodePath(image.id)}/$value`,
+    const result = await downloadAuthenticatedGraphFile({
+      accessToken,
+      urlOrPath: `/teams/${encodePath(channel.teamId)}/channels/${encodePath(channel.id)}/messages/${encodePath(message.id)}/hostedContents/${encodePath(image.id)}/$value`,
       destination,
-      {
+      options: {
         headers: {
-          Authorization: `Bearer ${accessToken}`,
           Accept: image.contentType || 'image/*',
         },
       },
-    );
+    });
     if (result.status < 200 || result.status >= 300) {
       await FileSystem.deleteAsync(destination, { idempotent: true });
-      return '';
+      return { expected: true, uri: fallbackUri, mimeType: fallbackMimeType };
     }
-    return destination;
+    return {
+      expected: true,
+      uri: destination,
+      mimeType,
+      hostedContentId: image.id,
+    };
   } catch {
-    return '';
+    return { expected: true, uri: fallbackUri, mimeType: fallbackMimeType };
   }
+};
+
+export const removeFeedMediaFile = async (uri) => {
+  const value = String(uri || '');
+  const appManaged = value.startsWith(MEDIA_DIRECTORY)
+    || value.startsWith(LEGACY_MEDIA_CACHE_DIRECTORY);
+  if (!appManaged) return false;
+  await FileSystem.deleteAsync(value, { idempotent: true }).catch(() => {});
+  return true;
 };
 
 export const resolveNorthGroupChannels = async (accessToken, { force = false } = {}) => {
@@ -302,19 +443,27 @@ export const loadTeamsChannelMessages = async ({
     `${GRAPH_ROOT}/teams/${encodePath(channel.teamId)}/channels/${encodePath(channel.id)}/messages?$top=50&$expand=replies`,
     accessToken,
   );
+  const cachedMessages = await readCachedChannelMessages({ accountId, channelKey });
+  const cachedById = new Map(
+    cachedMessages.map((message) => [String(message?.id || ''), message]),
+  );
   const liveMessages = messages
     .filter((message) => message?.messageType === 'message' && !message?.deletedDateTime);
   const hydrated = await Promise.all(liveMessages.map(async (message) => {
-    const imageUri = await loadHostedImage({
+    const image = await loadHostedImage({
       accessToken,
       accountId,
       channel,
       message,
+      existingMessage: cachedById.get(String(message?.id || '')),
     });
-    return normaliseMessage(message, channelKey, imageUri);
+    return normaliseMessage(message, channelKey, image);
   }));
   const normalised = hydrated
-    .filter((message) => message.id && (message.text || message.subject || message.imageUri))
+    .filter((message) => (
+      message.id
+      && (message.text || message.subject || message.imageUri || message.imageExpected)
+    ))
     .sort((left, right) => (
       new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
     ));
@@ -396,7 +545,21 @@ export const sendTeamsChannelMessage = async ({
     },
   );
 
-  const posted = normaliseMessage(message, channelKey, image?.uri || '');
+  let imageUri = '';
+  if (image?.uri) {
+    imageUri = await persistFeedImage({
+      sourceUri: image.uri,
+      accountId,
+      channelKey,
+      messageId: message?.id,
+      mimeType: image.mimeType || 'image/jpeg',
+    }).catch(() => image.uri);
+  }
+  const posted = normaliseMessage(message, channelKey, {
+    expected: Boolean(image),
+    uri: imageUri,
+    mimeType: image?.mimeType || '',
+  });
   const cached = await readCachedChannelMessages({ accountId, channelKey });
   const messages = [posted, ...cached.filter((item) => item.id !== posted.id)];
   await writeCachedChannelMessages({ accountId, channelKey, messages });

@@ -3,6 +3,7 @@ import { Asset } from 'expo-asset';
 
 import { S500_PPE_ITEMS } from '../../constants/s500PpeItems';
 import { S500_HAZARD_ROWS } from '../../constants/s500HazardRows';
+import { reportDevelopmentError } from '../../services/security/securityLogger';
 
 const NG_LOGO = require('../../../assets/ng_logo_white.png');
 const TOPO_BANNER = require('../../../assets/topo-bg.png');
@@ -25,7 +26,7 @@ const imageAssetToBase64 = async (assetModule) => {
       return null;
     }
 
-    if (uri.startsWith('http://') || uri.startsWith('https://')) {
+    if (uri.startsWith('https://')) {
       const downloadTarget = `${FileSystem.cacheDirectory}ng_logo_export.jpg`;
       const downloaded = await FileSystem.downloadAsync(uri, downloadTarget);
       uri = downloaded.uri;
@@ -37,7 +38,7 @@ const imageAssetToBase64 = async (assetModule) => {
 
     return base64;
   } catch (error) {
-    console.log('Could not load logo for PDF export:', error);
+    reportDevelopmentError('Could not load logo for PDF export', error);
     return null;
   }
 };

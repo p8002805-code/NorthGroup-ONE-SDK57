@@ -225,6 +225,11 @@ export const emptySE14 = {
   receiverModel: '',
   receiverSerial: '',
 
+  fieldRoundId: '',
+  fieldRoundSequence: '',
+  fieldRoundLabel: '',
+  fieldRoundStartedAt: '',
+
   startDate: '',
   startTime: '',
   measuredToStart: '',
@@ -256,7 +261,7 @@ export const emptySE14 = {
   photoEndHeightMeasurement: null,
 
   rawGnssFile: '',
-  rinexFile: '',
+  rinexFile: 'N/A',
 
   comments: '',
 };

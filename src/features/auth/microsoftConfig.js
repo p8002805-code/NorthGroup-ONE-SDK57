@@ -1,6 +1,8 @@
 export const MICROSOFT_CLIENT_ID = 'd35b703e-63b6-4fdb-8018-031a571e1573';
 export const MICROSOFT_TENANT_ID = 'e3c61ea6-0590-4aa5-8cc9-15324de5c3fa';
 export const MICROSOFT_REDIRECT_URI = 'msauth.com.northgroup.northgroupone://auth';
+export const MICROSOFT_PERMISSION_GRANT_VERSION = '2026-08-12-security-v3';
+export const MICROSOFT_ASSIGNED_USER_SCOPES = ['User.ReadBasic.All'];
 
 export const MICROSOFT_BASE_SCOPES = [
   'openid',
@@ -8,20 +10,19 @@ export const MICROSOFT_BASE_SCOPES = [
   'email',
   'offline_access',
   'User.Read',
+  'User.ReadBasic.All',
   'Team.ReadBasic.All',
   'Channel.ReadBasic.All',
   'ChannelMessage.Read.All',
   'ChannelMessage.Send',
   'Schedule.Read.All',
-  'Files.ReadWrite',
-  'Files.Read.All',
   'Files.ReadWrite.All',
   'Sites.Read.All',
 ];
 
 export const MICROSOFT_CHAT_SCOPES = [
   'Chat.Create',
-  'Chat.Read',
+  'Chat.ReadWrite',
   'ChatMessage.Send',
   'ChatMember.ReadWrite',
 ];

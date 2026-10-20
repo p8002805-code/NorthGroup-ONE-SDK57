@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   Keyboard,
@@ -17,18 +16,20 @@ import {
   View,
 } from "react-native";
 import { useCameraPermissions } from "expo-camera";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library";
+import * as ScreenOrientation from "expo-screen-orientation";
 import * as Sharing from "expo-sharing";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { COMPACT_RECENT_ITEMS_LIMIT } from "../../../constants/recentItems";
+import { profileInitials } from "../../account/accountProfile";
 import { SURVEY_IMAGE_TYPES } from "../constants/imageTypes";
 import {
   formatFileSize,
-  GOLD,
   NAVY,
-  PHOTO_BOTTOM_NAV_HEIGHT,
   ZIP_EMAIL_WARNING_BYTES,
 } from "../constants/photoTheme";
 import { STAFF_NAMES } from "../../../constants/staffNames";
@@ -39,33 +40,36 @@ import PhotoExportView from "../components/PhotoExportView";
 import PhotoGalleryView from "../components/PhotoGalleryView";
 import PhotoHomeView from "../components/PhotoHomeView";
 import PhotoMoreView from "../components/PhotoMoreView";
+import PhotoSavingOverlay from "../components/PhotoSavingOverlay";
+import PhotoSyncBanner from "../components/PhotoSyncBanner";
 import PhotoReviewModal from "../components/PhotoReviewModal";
 import PhotoViewerModal from "../components/PhotoViewerModal";
-import {
-  DoneButton,
-  GoldButton,
-  Input,
-  Label,
-} from "../components/PhotoUi";
+import { DoneButton, GoldButton, Input, Label } from "../components/PhotoUi";
 import SurveyPhotoBottomBar from "../components/SurveyPhotoBottomBar";
 import SurveyPhotoHeader from "../components/SurveyPhotoHeader";
 import SurveyorPickerModal from "../components/SurveyorPickerModal";
 import styles from "../styles/surveyPhotoStyles";
+import { describeSurveyPhotoProgress } from "../services/surveyPhotoProgress";
+import { getGpsCaptureWarning } from "../services/surveyPhotoRules";
+import useSurveyPhotoUploadOutbox from "../hooks/useSurveyPhotoUploadOutbox";
 import {
   createProject,
   emptyPhotoBin,
   exportProjectZip,
+  exportProjectZipParts,
   exportSelectedPhotosZip,
+  exportSelectedPhotosZipParts,
   listProjects,
   movePhotoToBin,
   movePhotosToBin,
   permanentlyDeletePhoto,
   permanentlyDeletePhotos,
+  preparePhotoForExport,
   restorePhotoFromBin,
   getPhotoDateKey,
-  getSurveyorInitials,
   saveCapturedPhoto,
   saveProject,
+  updatePhotoImageType,
 } from "../services/surveyPhotoStorage";
 
 const isDownwardSingleFingerGesture = (
@@ -88,6 +92,35 @@ const shouldFinishDownwardDismiss = (gesture) => {
   );
 };
 
+const GPS_REFINEMENT_TARGET_METRES = 5;
+const GPS_REFINEMENT_TIMEOUT_MS = 15000;
+const GPS_REFINED_FIX_HOLD_MS = 20000;
+const GPS_FIX_MAX_AGE_MS = 10000;
+
+const locationFixFromResult = (result) => {
+  const latitudeValue = result?.coords?.latitude;
+  const longitudeValue = result?.coords?.longitude;
+  if (latitudeValue == null || longitudeValue == null) return null;
+
+  const latitude = Number(latitudeValue);
+  const longitude = Number(longitudeValue);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  return {
+    ...result.coords,
+    latitude,
+    longitude,
+    timestamp: Number(result?.timestamp) || Date.now(),
+  };
+};
+
+const usableAccuracy = (fix) => {
+  const accuracyValue = fix?.accuracy;
+  if (accuracyValue == null) return null;
+  const accuracy = Number(accuracyValue);
+  return Number.isFinite(accuracy) && accuracy >= 0 ? accuracy : null;
+};
+
 export default function SurveyPhotoScreen({
   goBack,
   accountProfile,
@@ -96,20 +129,23 @@ export default function SurveyPhotoScreen({
   initialTab,
   launchCameraAt,
   backLabel = "Dashboard",
+  getAccessToken,
 }) {
   const insets = useSafeAreaInsets();
   const { width: viewerWidth, height: viewerHeight } = useWindowDimensions();
-  const requestedTab = [
-    "home",
-    "capture",
-    "gallery",
-    "qa",
-    "more",
-  ].includes(initialTab)
+  const authoritativeInitials = profileInitials(accountProfile);
+  const requestedTab = ["home", "capture", "gallery", "qa", "more"].includes(
+    initialTab,
+  )
     ? initialTab
     : "home";
   const cameraRef = useRef(null);
   const captureInFlightRef = useRef(false);
+  const locationRef = useRef(null);
+  const gpsRefinementSessionRef = useRef(null);
+  const gpsRefinedFixHoldUntilRef = useRef(0);
+  const gpsRefinementMessageTimerRef = useRef(null);
+  const sharePointUploadRef = useRef(false);
   const captureHandlerRef = useRef(null);
   const lastVolumeShutterAtRef = useRef(0);
   const permissionAlertShown = useRef(false);
@@ -125,11 +161,19 @@ export default function SurveyPhotoScreen({
   const [comment, setComment] = useState("");
   const [location, setLocation] = useState(null);
   const [locationPermission, setLocationPermission] = useState(null);
+  const [locationRefining, setLocationRefining] = useState(false);
+  const [gpsRefinementMessage, setGpsRefinementMessage] = useState("");
+  const [gpsFreshnessNow, setGpsFreshnessNow] = useState(Date.now());
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [flash, setFlash] = useState("off");
   const [tab, setTab] = useState(requestedTab);
   const [surveyorPicker, setSurveyorPicker] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [sharePointUpload, setSharePointUpload] = useState({
+    active: false,
+    scope: null,
+    progress: 0,
+  });
   const [saveToPhotos, setSaveToPhotos] = useState(false);
   const [repeatLastType, setRepeatLastType] = useState(true);
   const [lastSaved, setLastSaved] = useState("");
@@ -172,13 +216,79 @@ export default function SurveyPhotoScreen({
   const [exportWholeProject, setExportWholeProject] = useState(true);
   const [selectedExportDates, setSelectedExportDates] = useState([]);
   const [pendingShot, setPendingShot] = useState(null);
+  const [gpsCaptureWarning, setGpsCaptureWarning] = useState(null);
   const [savingText, setSavingText] = useState("Preparing camera…");
+  const [savingDetail, setSavingDetail] = useState("");
+  const [savingProgress, setSavingProgress] = useState(null);
+  const zipProgressUiRef = useRef({ percent: -1, text: "", detail: "" });
   const pinchStartDistance = useRef(0);
   const pinchStartZoom = useRef(0);
   const cameraDismissY = useRef(new Animated.Value(0)).current;
+  const photoUploads = useSurveyPhotoUploadOutbox({
+    activeJob,
+    getAccessToken,
+    project,
+    userInitials: authoritativeInitials,
+  });
 
   selectionModeRef.current = selectionMode;
   selectedPhotoIdsRef.current = selectedPhotoIds;
+
+  const commitLocationResult = (result) => {
+    const nextFix = locationFixFromResult(result);
+    if (!nextFix) return null;
+    locationRef.current = nextFix;
+    setLocation(nextFix);
+    return nextFix;
+  };
+
+  const cancelGpsRefinement = () => {
+    const session = gpsRefinementSessionRef.current;
+    if (!session) return;
+
+    session.cancelled = true;
+    if (session.timeoutId) clearTimeout(session.timeoutId);
+    session.subscription?.remove();
+    session.resolve?.("cancelled");
+    gpsRefinementSessionRef.current = null;
+  };
+
+  const resetSavingProgress = () => {
+    zipProgressUiRef.current = { percent: -1, text: "", detail: "" };
+    setSavingProgress(null);
+    setSavingDetail("");
+  };
+
+  const updateZipProgress = (status = {}) => {
+    const next = describeSurveyPhotoProgress(status);
+    const previous = zipProgressUiRef.current;
+    if (previous.percent !== next.percent) setSavingProgress(next.progress);
+    if (previous.text !== next.text) setSavingText(next.text);
+    if (previous.detail !== next.detail) setSavingDetail(next.detail);
+    if (sharePointUploadRef.current) setSharePointUpload((current) => ({ ...current, progress: next.progress }));
+    zipProgressUiRef.current = next;
+  };
+
+  const beginSharePointUpload = (scope, text, { progressive = false } = {}) => {
+    if (sharePointUploadRef.current) return false;
+    sharePointUploadRef.current = true;
+    photoUploads.pauseAutoProcessing();
+    setSharePointUpload({ active: true, scope, progress: 0 });
+    zipProgressUiRef.current = { percent: -1, text: "", detail: "" };
+    setSavingText(text);
+    setSavingDetail("");
+    setSavingProgress(progressive ? 0 : null);
+    setSaving(true);
+    return true;
+  };
+
+  const finishSharePointUpload = () => {
+    sharePointUploadRef.current = false;
+    photoUploads.resumeAutoProcessing();
+    setSharePointUpload({ active: false, scope: null, progress: 0 });
+    resetSavingProgress();
+    setSaving(false);
+  };
 
   const photoIndexAtPoint = (x, y) => {
     const config = galleryDragConfigRef.current;
@@ -222,8 +332,7 @@ export default function SurveyPhotoScreen({
     const viewport = galleryViewportRef.current;
     const grid = galleryGridLayoutRef.current;
     const contentX = pageX - viewport.left - grid.x;
-    const contentY =
-      pageY - viewport.top + galleryScrollYRef.current - grid.y;
+    const contentY = pageY - viewport.top + galleryScrollYRef.current - grid.y;
     applyIphoneSelectionRange(photoIndexAtPoint(contentX, contentY));
   };
 
@@ -243,8 +352,7 @@ export default function SurveyPhotoScreen({
 
       const edge = 76;
       const distanceFromTop = drag.pageY - viewport.top;
-      const distanceFromBottom =
-        viewport.top + viewport.height - drag.pageY;
+      const distanceFromBottom = viewport.top + viewport.height - drag.pageY;
       let delta = 0;
       if (distanceFromTop < edge)
         delta = -Math.max(2, ((edge - distanceFromTop) / edge) * 15);
@@ -330,6 +438,11 @@ export default function SurveyPhotoScreen({
   ).current;
 
   const exitCameraToWorkspace = () => {
+    const warningUri = gpsCaptureWarning?.shot?.uri;
+    setGpsCaptureWarning(null);
+    if (warningUri) {
+      FileSystem.deleteAsync(warningUri, { idempotent: true }).catch(() => {});
+    }
     setCameraReady(false);
     setTab("home");
   };
@@ -415,6 +528,23 @@ export default function SurveyPhotoScreen({
   }, [cameraDismissY, tab]);
 
   useEffect(() => {
+    if (tab !== "capture") return undefined;
+
+    // Keep every control in the proven portrait layout. CameraView's
+    // responsiveOrientationWhenOrientationLocked prop still records the frame
+    // with the correct physical device orientation.
+    ScreenOrientation.lockAsync(
+      ScreenOrientation.OrientationLock.PORTRAIT_UP,
+    ).catch(() => {});
+
+    return () => {
+      ScreenOrientation.lockAsync(
+        ScreenOrientation.OrientationLock.PORTRAIT_UP,
+      ).catch(() => {});
+    };
+  }, [tab]);
+
+  useEffect(() => {
     if (
       requestedTab === "capture" &&
       (initialTab === "capture" || launchCameraAt)
@@ -445,9 +575,11 @@ export default function SurveyPhotoScreen({
     try {
       if (!(await Sharing.isAvailableAsync()))
         throw new Error("Sharing is not available on this device.");
-      await Sharing.shareAsync(photo.uri, {
+      const prepared = await preparePhotoForExport(photo);
+      await Sharing.shareAsync(prepared.uri, {
         mimeType: "image/jpeg",
-        dialogTitle: photo.fileName || "Share survey photo",
+        dialogTitle:
+          prepared.fileName || photo.fileName || "Share survey photo",
       });
     } catch (error) {
       Alert.alert("Photo not shared", error.message || "Please try again.");
@@ -465,7 +597,8 @@ export default function SurveyPhotoScreen({
         );
         return;
       }
-      await MediaLibrary.createAssetAsync(photo.uri);
+      const prepared = await preparePhotoForExport(photo);
+      await MediaLibrary.createAssetAsync(prepared.uri);
       Alert.alert(
         "Copy saved",
         "A convenience copy was saved to iPhone Photos. The project copy remains the official record.",
@@ -492,7 +625,10 @@ export default function SurveyPhotoScreen({
                 setProject(next);
                 closePreview();
               } catch (error) {
-                Alert.alert("Photo not moved", error.message || "Please try again.");
+                Alert.alert(
+                  "Photo not moved",
+                  error.message || "Please try again.",
+                );
               }
             },
           },
@@ -504,10 +640,7 @@ export default function SurveyPhotoScreen({
   };
 
   const confirmProtectedDelete = async () => {
-    if (
-      deleteConfirmation.trim().toUpperCase() !== "DELETE" ||
-      !deleteRequest
-    )
+    if (deleteConfirmation.trim().toUpperCase() !== "DELETE" || !deleteRequest)
       return;
     try {
       let next;
@@ -573,11 +706,17 @@ export default function SurveyPhotoScreen({
           style: "destructive",
           onPress: async () => {
             try {
-              const next = await movePhotosToBin(project, selectedGalleryPhotos);
+              const next = await movePhotosToBin(
+                project,
+                selectedGalleryPhotos,
+              );
               setProject(next);
               exitSelectionMode();
             } catch (error) {
-              Alert.alert("Photos not moved", error.message || "Please try again.");
+              Alert.alert(
+                "Photos not moved",
+                error.message || "Please try again.",
+              );
             }
           },
         },
@@ -605,36 +744,169 @@ export default function SurveyPhotoScreen({
       setProject(next);
       exitSelectionMode();
     } catch (error) {
-      Alert.alert(
-        "Photos not restored",
-        error.message || "Please try again.",
-      );
+      Alert.alert("Photos not restored", error.message || "Please try again.");
     }
   };
 
   const requestEmptyBin = () => {
     if (!binnedPhotos.length) return;
     setDeleteConfirmation("");
-    setDeleteRequest({ permanent: true, action: "empty", photos: binnedPhotos });
+    setDeleteRequest({
+      permanent: true,
+      action: "empty",
+      photos: binnedPhotos,
+    });
   };
 
   const exportSelectedPhotos = async () => {
     if (!selectedGalleryPhotos.length) return;
+    let result = null;
     try {
+      zipProgressUiRef.current = { percent: -1, text: "", detail: "" };
       setSavingText("Compiling selected photos…");
+      setSavingDetail("");
+      setSavingProgress(0);
       setSaving(true);
-      const result = await exportSelectedPhotosZip(project, selectedGalleryPhotos);
+      result = await exportSelectedPhotosZip(
+        project,
+        selectedGalleryPhotos,
+        authoritativeInitials,
+        updateZipProgress,
+      );
       if (!(await Sharing.isAvailableAsync()))
         throw new Error("Sharing is not available on this device.");
       await Sharing.shareAsync(result.uri, {
         mimeType: "application/zip",
-        dialogTitle: `${project.projectNumber} selected photos`,
+        dialogTitle: result.fileName || `${project.projectNumber} photos`,
         UTI: "public.zip-archive",
       });
     } catch (error) {
-      Alert.alert("Selected photos not exported", error.message || "Please try again.");
+      Alert.alert(
+        "Selected photos not exported",
+        error.message || "Please try again.",
+      );
     } finally {
+      if (result?.uri) {
+        FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => undefined);
+      }
+      resetSavingProgress();
       setSaving(false);
+    }
+  };
+
+  const uploadSelectedPhotosToSharePoint = async () => {
+    if (!selectedGalleryPhotos.length) return;
+    if (!getAccessToken) {
+      Alert.alert(
+        "Microsoft sign-in required",
+        "Sign in with Microsoft before uploading selected photos.",
+      );
+      return;
+    }
+    if (!beginSharePointUpload(
+      "selected",
+      "Compiling selected photos…",
+      { progressive: true },
+    )) return;
+
+    let queuedPartCount = 0;
+    try {
+      const result = await exportSelectedPhotosZipParts(
+        project,
+        selectedGalleryPhotos,
+        authoritativeInitials,
+        {
+          onProgress: updateZipProgress,
+          onPartReady: async (part) => {
+            setSavingText(
+              part.partCount > 1
+                ? `Saving package ${part.partNumber} of ${part.partCount}…`
+                : "Saving selected photos to the upload queue…",
+            );
+            setSavingDetail(
+              part.partCount > 1
+                ? `${formatFileSize(part.sizeBytes)} · Safe offline upload queue`
+                : "Safe offline upload queue",
+            );
+            try {
+              await photoUploads.enqueueZip({ kind: "selected", part });
+              queuedPartCount += 1;
+            } finally {
+              await FileSystem.deleteAsync(part.uri, { idempotent: true }).catch(() => undefined);
+            }
+          },
+        },
+      );
+      exitSelectionMode();
+      if (photoUploads.offline) {
+        finishSharePointUpload();
+        Alert.alert(
+          "Saved for upload",
+          result.partCount > 1
+            ? `${result.partCount} photo packages are safely stored on this iPhone and will upload automatically when connected.`
+            : "The selected photos are safely stored on this iPhone and will upload automatically when connected.",
+        );
+      } else {
+        await photoUploads.processNow(updateZipProgress);
+      }
+    } catch (error) {
+      Alert.alert(
+        queuedPartCount ? "Photo upload partly queued" : "Selected photos not queued",
+        queuedPartCount
+          ? `${queuedPartCount} package${queuedPartCount === 1 ? " is" : "s are"} safely queued. The remaining photos could not be prepared: ${error?.message || "Please try again."}`
+          : error?.message || "The selected photos could not be prepared for upload.",
+      );
+    } finally {
+      if (sharePointUploadRef.current) finishSharePointUpload();
+    }
+  };
+
+  const uploadPhotoToSharePoint = async (photo) => {
+    if (!photo?.uri || photo.deletedAt) return;
+    if (!getAccessToken) {
+      Alert.alert(
+        "Microsoft sign-in required",
+        "Sign in with Microsoft before uploading this photo.",
+      );
+      return;
+    }
+    const uploadScope = `photo:${photo.id}`;
+    if (!beginSharePointUpload(
+      uploadScope,
+      "Preparing photo…",
+      { progressive: true },
+    )) return;
+
+    try {
+      const prepared = await preparePhotoForExport(photo);
+      setSavingText("Saving photo to the upload queue…");
+      await photoUploads.enqueue({
+        kind: "photo",
+        asset: {
+          uri: prepared.uri,
+          name: prepared.fileName,
+          mimeType: "image/jpeg",
+          captureDateTime: photo.captureDateTime,
+          photoCount: 1,
+          totalPhotoCount: 1,
+        },
+      });
+      if (photoUploads.offline) {
+        finishSharePointUpload();
+        Alert.alert(
+          "Saved for upload",
+          "The photo is safely stored on this iPhone and will upload automatically when connected.",
+        );
+      } else {
+        await photoUploads.processNow(updateZipProgress);
+      }
+    } catch (error) {
+      Alert.alert(
+        "Photo not queued",
+        error?.message || "The photo could not be prepared for upload.",
+      );
+    } finally {
+      if (sharePointUploadRef.current) finishSharePointUpload();
     }
   };
 
@@ -648,6 +920,37 @@ export default function SurveyPhotoScreen({
     }
   };
 
+  const changePhotoImageType = async (photo, nextType) => {
+    try {
+      const result = await updatePhotoImageType(project, photo, nextType);
+      setProject(result.project);
+      setProjects((items) =>
+        items.map((item) =>
+          item.projectNumber === result.project.projectNumber
+            ? result.project
+            : item,
+        ),
+      );
+      setPreviewPhoto(result.record);
+      setPreviewPhotos((photos) =>
+        photos.map((item) =>
+          item.id === result.record.id ? result.record : item,
+        ),
+      );
+      setGalleryType("All");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => {},
+      );
+      return result.record;
+    } catch (error) {
+      Alert.alert(
+        "Image type not changed",
+        error?.message || "Please try again.",
+      );
+      return null;
+    }
+  };
+
   useEffect(() => {
     const openActiveProject = async () => {
       const all = await listProjects();
@@ -656,13 +959,18 @@ export default function SurveyPhotoScreen({
       const existing = all.find(
         (item) => item.projectNumber === activeJob.number,
       );
-      const next =
-        existing ||
-        (await createProject(
+      const next = existing
+        ? await saveProject({
+          ...existing,
+          surveyor: accountProfile?.fullName || existing.surveyor,
+          surveyorInitials: authoritativeInitials,
+        })
+        : await createProject(
           activeJob.number,
           "1000",
           accountProfile?.fullName || "",
-        ));
+          authoritativeInitials,
+        );
       selectProject(next);
     };
     openActiveProject().catch((error) =>
@@ -680,13 +988,41 @@ export default function SurveyPhotoScreen({
       if (saveConfirmationTimerRef.current) {
         clearTimeout(saveConfirmationTimerRef.current);
       }
+      cancelGpsRefinement();
+      if (gpsRefinementMessageTimerRef.current) {
+        clearTimeout(gpsRefinementMessageTimerRef.current);
+      }
     };
-  }, [activeJob?.number]);
+  }, [activeJob?.number, accountProfile?.fullName, authoritativeInitials]);
 
   useEffect(() => {
     setProjectNumber(activeJob?.number || "");
     setSurveyor((current) => current.trim() || accountProfile?.fullName || "");
   }, [accountProfile, activeJob]);
+
+  useEffect(() => {
+    if (!project || (
+      project.surveyorInitials === authoritativeInitials
+      && project.surveyor === (accountProfile?.fullName || project.surveyor)
+    )) return;
+
+    let cancelled = false;
+    saveProject({
+      ...project,
+      surveyor: accountProfile?.fullName || project.surveyor,
+      surveyorInitials: authoritativeInitials,
+    }).then((updated) => {
+      if (cancelled) return;
+      setProject(updated);
+      setProjects((items) => items.map((item) => (
+        item.projectNumber === updated.projectNumber ? updated : item
+      )));
+    }).catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accountProfile?.fullName, authoritativeInitials, project?.projectNumber]);
 
   useEffect(() => {
     if (!initialFeature) return;
@@ -738,8 +1074,15 @@ export default function SurveyPhotoScreen({
           timeInterval: 2000,
           distanceInterval: 1,
         },
-        (result) =>
-          setLocation({ ...result.coords, timestamp: result.timestamp }),
+        (result) => {
+          if (
+            gpsRefinementSessionRef.current ||
+            Date.now() < gpsRefinedFixHoldUntilRef.current
+          ) {
+            return;
+          }
+          commitLocationResult(result);
+        },
       );
     };
 
@@ -749,6 +1092,21 @@ export default function SurveyPhotoScreen({
       subscription?.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (tab === "capture") return;
+    cancelGpsRefinement();
+    setLocationRefining(false);
+  }, [tab]);
+
+  useEffect(() => {
+    setGpsFreshnessNow(Date.now());
+    const timer = setInterval(
+      () => setGpsFreshnessNow(Date.now()),
+      tab === "capture" ? 1000 : 5000,
+    );
+    return () => clearInterval(timer);
+  }, [tab]);
 
   const selectProject = (next) => {
     setProject(next);
@@ -761,7 +1119,7 @@ export default function SurveyPhotoScreen({
   const addProject = async () => {
     Keyboard.dismiss();
     try {
-      const next = await createProject(projectNumber, startPhotoId, surveyor);
+      const next = await createProject(projectNumber, startPhotoId, surveyor, authoritativeInitials);
       setProjects(await listProjects());
       selectProject(next);
     } catch (error) {
@@ -780,6 +1138,139 @@ export default function SurveyPhotoScreen({
     );
   };
 
+  const refineGpsLocation = async () => {
+    if (gpsRefinementSessionRef.current || locationRefining) return;
+
+    let permission = await Location.getForegroundPermissionsAsync().catch(
+      () => locationPermission,
+    );
+    if (!permission?.granted && permission?.canAskAgain !== false) {
+      permission = await Location.requestForegroundPermissionsAsync();
+    }
+    if (permission) setLocationPermission(permission);
+
+    if (!permission?.granted) {
+      openLocationSettings();
+      return;
+    }
+
+    const preciseLocationDisabled =
+      permission?.ios?.accuracy === "reduced" ||
+      permission?.android?.accuracy === "coarse";
+    if (preciseLocationDisabled) {
+      Alert.alert(
+        "Precise Location required",
+        "Turn Precise Location on for NorthGroup One, then tap the GPS button again.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Open Settings", onPress: () => Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+
+    const session = {
+      cancelled: false,
+      resolve: null,
+      subscription: null,
+      timeoutId: null,
+      error: null,
+    };
+    gpsRefinementSessionRef.current = session;
+    gpsRefinedFixHoldUntilRef.current = 0;
+    setLocationRefining(true);
+    setGpsRefinementMessage("");
+    Haptics.selectionAsync().catch(() => {});
+
+    let bestFix = null;
+    let bestAccuracy = null;
+
+    try {
+      if (Platform.OS === "android") {
+        await Location.enableNetworkProviderAsync().catch(() => {});
+      }
+
+      if (session.cancelled) return;
+
+      const refinementFinished = new Promise((resolve) => {
+        session.resolve = resolve;
+        session.timeoutId = setTimeout(
+          () => resolve("timeout"),
+          GPS_REFINEMENT_TIMEOUT_MS,
+        );
+      });
+
+      session.subscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 750,
+          distanceInterval: 0,
+          mayShowUserSettingsDialog: true,
+        },
+        (result) => {
+          if (session.cancelled) return;
+          const candidate = locationFixFromResult(result);
+          const candidateAccuracy = usableAccuracy(candidate);
+          if (!candidate || candidateAccuracy == null) return;
+
+          if (bestAccuracy == null || candidateAccuracy < bestAccuracy) {
+            bestFix = candidate;
+            bestAccuracy = candidateAccuracy;
+            locationRef.current = candidate;
+            setLocation(candidate);
+          }
+
+          if (candidateAccuracy <= GPS_REFINEMENT_TARGET_METRES) {
+            session.resolve?.("target");
+          }
+        },
+        (message) => {
+          session.error = String(message || "GPS refinement failed.");
+          session.resolve?.("error");
+        },
+      );
+
+      if (session.cancelled) {
+        session.subscription.remove();
+        return;
+      }
+
+      const finishReason = await refinementFinished;
+      if (finishReason === "cancelled" || session.cancelled) return;
+      if (!bestFix) {
+        throw new Error(session.error || "No fresh GPS fix was received.");
+      }
+
+      locationRef.current = bestFix;
+      setLocation(bestFix);
+      gpsRefinedFixHoldUntilRef.current =
+        Date.now() + GPS_REFINED_FIX_HOLD_MS;
+      setGpsRefinementMessage("BEST FIX");
+      if (gpsRefinementMessageTimerRef.current) {
+        clearTimeout(gpsRefinementMessageTimerRef.current);
+      }
+      gpsRefinementMessageTimerRef.current = setTimeout(
+        () => setGpsRefinementMessage(""),
+        2500,
+      );
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => {},
+      );
+    } catch (error) {
+      Alert.alert(
+        "GPS not refreshed",
+        `${error?.message || "A fresh position could not be obtained."}\n\nFor the best result, stand still with a clear view of the sky and try again.`,
+      );
+    } finally {
+      if (session.timeoutId) clearTimeout(session.timeoutId);
+      session.subscription?.remove();
+      if (gpsRefinementSessionRef.current === session) {
+        gpsRefinementSessionRef.current = null;
+      }
+      setLocationRefining(false);
+    }
+  };
+
   const chooseSurveyor = async (name) => {
     setSurveyor(name);
     setSurveyorPicker(false);
@@ -788,7 +1279,7 @@ export default function SurveyPhotoScreen({
       const updated = await saveProject({
         ...project,
         surveyor: name,
-        surveyorInitials: getSurveyorInitials(name),
+        surveyorInitials: authoritativeInitials,
       });
       setProject(updated);
       setProjects((items) =>
@@ -828,16 +1319,19 @@ export default function SurveyPhotoScreen({
       return;
     }
 
-    const preciseOff = locationPermission?.ios?.accuracy === "reduced";
-    const poor = location?.accuracy > 8;
-    const gpsWarningMessage =
-      preciseOff || !location || poor
-        ? preciseOff
-          ? "Precise Location was off when this photo was taken."
-          : !location
-            ? "No GPS position was available for this photo."
-            : `GPS accuracy was ±${location.accuracy.toFixed(1)} m, outside the 8 m tolerance.`
-        : "";
+    const captureLocation = locationRef.current || location;
+    const captureAccuracy = usableAccuracy(captureLocation);
+    const preciseOff =
+      locationPermission?.ios?.accuracy === "reduced" ||
+      locationPermission?.android?.accuracy === "coarse";
+    const gpsWarningMessage = getGpsCaptureWarning({
+      hasLocation: Boolean(captureLocation),
+      accuracy: captureAccuracy,
+      preciseLocationDisabled: preciseOff,
+      toleranceMetres: 8,
+      fixTimestamp: captureLocation?.timestamp,
+      maxFixAgeMs: GPS_FIX_MAX_AGE_MS,
+    });
 
     if (captureInFlightRef.current) return;
 
@@ -845,7 +1339,7 @@ export default function SurveyPhotoScreen({
       photoId: photoId.trim(),
       pointId: pointId.trim(),
       comment,
-      location: location ? { ...location } : null,
+      location: captureLocation ? { ...captureLocation } : null,
       capturedAt: new Date().toISOString(),
     };
 
@@ -875,22 +1369,12 @@ export default function SurveyPhotoScreen({
           ),
         )[0]?.imageType;
       setImageType(
-        (current) =>
-          current || (repeatLastType && lastType ? lastType : ""),
+        (current) => current || (repeatLastType && lastType ? lastType : ""),
       );
       setCustomType("");
       const capturedShot = { uri: capturedUri, ...captureContext };
       if (gpsWarningMessage) {
-        Alert.alert(
-          "GPS outside tolerance",
-          gpsWarningMessage,
-          [
-            {
-              text: "Continue to Review",
-              onPress: () => setPendingShot(capturedShot),
-            },
-          ],
-        );
+        setGpsCaptureWarning({ message: gpsWarningMessage, shot: capturedShot });
       } else {
         setPendingShot(capturedShot);
       }
@@ -900,6 +1384,21 @@ export default function SurveyPhotoScreen({
       captureInFlightRef.current = false;
       setSaving(false);
     }
+  };
+
+  const cancelGpsCaptureWarning = () => {
+    const capturedUri = gpsCaptureWarning?.shot?.uri;
+    setGpsCaptureWarning(null);
+    if (capturedUri) {
+      FileSystem.deleteAsync(capturedUri, { idempotent: true }).catch(() => {});
+    }
+    Haptics.selectionAsync().catch(() => {});
+  };
+
+  const continueGpsCaptureWarning = () => {
+    const capturedShot = gpsCaptureWarning?.shot;
+    setGpsCaptureWarning(null);
+    if (capturedShot) setPendingShot(capturedShot);
   };
 
   captureHandlerRef.current = capture;
@@ -982,9 +1481,9 @@ export default function SurveyPhotoScreen({
         () => setSaveConfirmation(""),
         2200,
       );
-      Haptics.notificationAsync(
-        Haptics.NotificationFeedbackType.Success,
-      ).catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => {},
+      );
       setPendingShot(null);
       setImageType(repeatLastType ? selectedType : "");
       setCustomType("");
@@ -1017,6 +1516,9 @@ export default function SurveyPhotoScreen({
         <ScrollView
           style={styles.body}
           contentContainerStyle={styles.content}
+          bounces={false}
+          alwaysBounceVertical={false}
+          overScrollMode="never"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
         >
@@ -1065,7 +1567,7 @@ export default function SurveyPhotoScreen({
               </View>
             </View>
             <Text style={styles.filenamePreview}>
-              Filename preview: {getSurveyorInitials(surveyor) || "XX"}_
+              Filename preview: {authoritativeInitials || "XX"}_
               {startPhotoId || "1000"}_Drainage.jpg
             </Text>
             {keyboardVisible ? <DoneButton /> : null}
@@ -1106,6 +1608,9 @@ export default function SurveyPhotoScreen({
           >
             <View style={styles.picker}>
               <Text style={styles.pickerTitle}>Select Surveyor</Text>
+              <Text style={styles.initialsText}>
+                Photo initials: {authoritativeInitials} · Profile Settings
+              </Text>
               <ScrollView>
                 {STAFF_NAMES.map((name) => (
                   <Pressable
@@ -1115,9 +1620,6 @@ export default function SurveyPhotoScreen({
                   >
                     <View>
                       <Text style={styles.typeText}>{name}</Text>
-                      <Text style={styles.initialsText}>
-                        {getSurveyorInitials(name)}
-                      </Text>
                     </View>
                     {surveyor === name ? (
                       <Text style={styles.selectedTick}>✓</Text>
@@ -1133,6 +1635,10 @@ export default function SurveyPhotoScreen({
   }
 
   const accuracy = location?.accuracy;
+  const locationStale = Boolean(
+    Number(location?.timestamp) > 0 &&
+      gpsFreshnessNow - Number(location.timestamp) > GPS_FIX_MAX_AGE_MS,
+  );
   const activePhotos = project.photos.filter((photo) => !photo.deletedAt);
   const binnedPhotos = project.photos.filter((photo) =>
     Boolean(photo.deletedAt),
@@ -1153,17 +1659,13 @@ export default function SurveyPhotoScreen({
       : activePhotos.filter(
           (photo) => galleryType === "All" || photo.imageType === galleryType,
         );
-  const galleryPhotos = [...visibleGalleryPhotos].sort((a, b) => {
-    const aDate =
-      libraryMode === "bin"
-        ? a.deletedAt || a.captureDateTime
-        : a.captureDateTime;
-    const bDate =
-      libraryMode === "bin"
-        ? b.deletedAt || b.captureDateTime
-        : b.captureDateTime;
-    return String(bDate || b.id).localeCompare(String(aDate || a.id));
-  });
+  // Keep the original capture chronology in every gallery view. Moving a
+  // photo to the Bin or restoring it must never change where it belongs.
+  const galleryPhotos = [...visibleGalleryPhotos].sort((a, b) =>
+    String(b.captureDateTime || b.id).localeCompare(
+      String(a.captureDateTime || a.id),
+    ),
+  );
   const galleryViewerPhotos = galleryPhotos;
   const selectedGalleryPhotos = galleryPhotos.filter((photo) =>
     selectedPhotoIds.includes(photo.id),
@@ -1179,7 +1681,7 @@ export default function SurveyPhotoScreen({
         .map((photo) => photo.imageType)
         .filter(Boolean),
     ),
-  ].slice(0, 4);
+  ].slice(0, COMPACT_RECENT_ITEMS_LIMIT);
   const galleryTileSize = Math.max(1, Math.floor((viewerWidth - 30) / 3));
   galleryDragConfigRef.current = {
     photos: galleryPhotos,
@@ -1220,12 +1722,18 @@ export default function SurveyPhotoScreen({
       return;
     }
 
+    let result = null;
     try {
+      zipProgressUiRef.current = { percent: -1, text: "", detail: "" };
       setSavingText("Compiling photos…");
+      setSavingDetail("");
+      setSavingProgress(0);
       setSaving(true);
-      const result = await exportProjectZip(
+      result = await exportProjectZip(
         project,
         exportWholeProject ? null : selectedExportDates,
+        authoritativeInitials,
+        updateZipProgress,
       );
       const shareExport = async () => {
         if (!(await Sharing.isAvailableAsync())) {
@@ -1261,7 +1769,80 @@ export default function SurveyPhotoScreen({
     } catch (error) {
       Alert.alert("Export failed", error.message);
     } finally {
+      resetSavingProgress();
       setSaving(false);
+    }
+  };
+
+  const uploadProjectToSharePoint = async () => {
+    if (!exportWholeProject && !selectedExportDates.length) {
+      Alert.alert(
+        "Select a capture day",
+        "Choose at least one date to upload.",
+      );
+      return;
+    }
+    if (!getAccessToken) {
+      Alert.alert(
+        "Microsoft sign-in required",
+        "Sign in with Microsoft before uploading job photos.",
+      );
+      return;
+    }
+    if (!beginSharePointUpload(
+      "project",
+      "Compiling photos…",
+      { progressive: true },
+    )) return;
+
+    let queuedPartCount = 0;
+    try {
+      const result = await exportProjectZipParts(
+        project,
+        exportWholeProject ? null : selectedExportDates,
+        authoritativeInitials,
+        {
+          onProgress: updateZipProgress,
+          onPartReady: async (part) => {
+            setSavingText(
+              part.partCount > 1
+                ? `Saving package ${part.partNumber} of ${part.partCount}…`
+                : "Saving photos to the upload queue…",
+            );
+            setSavingDetail(
+              part.partCount > 1
+                ? `${formatFileSize(part.sizeBytes)} · Safe offline upload queue`
+                : "Safe offline upload queue",
+            );
+            try {
+              await photoUploads.enqueueZip({ kind: "project", part });
+              queuedPartCount += 1;
+            } finally {
+              await FileSystem.deleteAsync(part.uri, { idempotent: true }).catch(() => undefined);
+            }
+          },
+        },
+      );
+      if (photoUploads.offline) {
+        finishSharePointUpload();
+        Alert.alert(
+          "Saved for upload",
+          result.partCount > 1
+            ? `${result.partCount} photo packages are safely stored on this iPhone and will upload automatically when connected.`
+            : "The photo export is safely stored on this iPhone and will upload automatically when connected.",
+        );
+      } else {
+        await photoUploads.processNow(updateZipProgress);
+      }
+    } catch (error) {
+      Alert.alert(
+        queuedPartCount ? "Photo upload partly queued" : "Photo export not queued",
+        queuedPartCount
+          ? `${queuedPartCount} package${queuedPartCount === 1 ? " is" : "s are"} safely queued. The remaining photos could not be prepared: ${error?.message || "Please try again."}`
+          : error?.message || "The photo export could not be prepared for upload.",
+      );
+    } finally {
+      if (sharePointUploadRef.current) finishSharePointUpload();
     }
   };
 
@@ -1278,9 +1859,20 @@ export default function SurveyPhotoScreen({
           activeJob={activeJob}
           photoCount={activePhotos.length}
           accuracy={accuracy}
+          locationStale={locationStale}
           locationPermission={locationPermission}
           onBack={goBack}
           backLabel={backLabel}
+        />
+      ) : null}
+
+      {tab !== "capture" ? (
+        <PhotoSyncBanner
+          offline={photoUploads.offline}
+          pendingCount={photoUploads.items.length}
+          processing={photoUploads.processing}
+          progress={photoUploads.progress}
+          onPress={photoUploads.retry}
         />
       ) : null}
 
@@ -1299,6 +1891,11 @@ export default function SurveyPhotoScreen({
       {tab === "capture" ? (
         <PhotoCameraView
           accuracy={accuracy}
+          locationStale={locationStale}
+          networkOffline={photoUploads.offline}
+          pendingUploadCount={photoUploads.items.length}
+          photoOutboxProcessing={photoUploads.processing}
+          onRetryPendingUploads={photoUploads.retry}
           cameraDismissResponder={cameraDismissResponder}
           cameraDismissY={cameraDismissY}
           cameraPermission={cameraPermission}
@@ -1309,15 +1906,24 @@ export default function SurveyPhotoScreen({
           flash={flash}
           keyboardVisible={keyboardVisible}
           locationPermission={locationPermission}
+          locationRefining={locationRefining}
           onCapture={capture}
           onClose={exitCameraToWorkspace}
           onOpenLocationSettings={openLocationSettings}
+          onRefineLocation={refineGpsLocation}
           photoId={photoId}
           pointId={pointId}
           requestCameraPermission={requestCameraPermission}
+          safeAreaBottom={insets.bottom}
+          safeAreaLeft={insets.left}
+          safeAreaRight={insets.right}
           safeAreaTop={insets.top}
           saveConfirmation={saveConfirmation}
           saving={saving}
+          gpsRefinementMessage={gpsRefinementMessage}
+          gpsCaptureWarning={gpsCaptureWarning}
+          onCancelGpsWarning={cancelGpsCaptureWarning}
+          onContinueGpsWarning={continueGpsCaptureWarning}
           setCameraReady={setCameraReady}
           setCameraZoom={(nextZoom) => {
             cameraZoomRef.current = nextZoom;
@@ -1334,11 +1940,9 @@ export default function SurveyPhotoScreen({
           activePhotos={activePhotos}
           availableGalleryTypes={availableGalleryTypes}
           binnedPhotos={binnedPhotos}
-          bottomActionOffset={
-            PHOTO_BOTTOM_NAV_HEIGHT + Math.max(insets.bottom, 7)
-          }
           exitSelectionMode={exitSelectionMode}
           exportSelectedPhotos={exportSelectedPhotos}
+          uploadSelectedPhotosToSharePoint={uploadSelectedPhotosToSharePoint}
           galleryGridLayoutRef={galleryGridLayoutRef}
           galleryPhotos={galleryPhotos}
           galleryScrollRef={galleryScrollRef}
@@ -1354,9 +1958,11 @@ export default function SurveyPhotoScreen({
           requestDeleteSelectedFromBin={requestDeleteSelectedFromBin}
           requestEmptyBin={requestEmptyBin}
           restoreSelectedFromBin={restoreSelectedFromBin}
+          safeAreaBottom={insets.bottom}
           selectedGalleryPhotos={selectedGalleryPhotos}
           selectedPhotoIds={selectedPhotoIds}
           selectionMode={selectionMode}
+          sharePointUpload={sharePointUpload}
           setGalleryType={setGalleryType}
           setLibraryMode={setLibraryMode}
           setSelectionMode={setSelectionMode}
@@ -1370,11 +1976,14 @@ export default function SurveyPhotoScreen({
           exportWholeProject={exportWholeProject}
           formatDateFolder={formatDateFolder}
           onExport={exportProject}
+          onUploadSharePoint={uploadProjectToSharePoint}
           photoDateKeys={photoDateKeys}
           photosByDate={photosByDate}
           selectedExportDates={selectedExportDates}
           setExportWholeProject={setExportWholeProject}
           setSelectedExportDates={setSelectedExportDates}
+          sharePointDestination={`Job Files / Photos / ${authoritativeInitials}`}
+          sharePointUpload={sharePointUpload}
         />
       ) : null}
 
@@ -1400,7 +2009,7 @@ export default function SurveyPhotoScreen({
         />
       ) : null}
 
-      {tab !== "capture" ? (
+      {tab !== "capture" && !(tab === "gallery" && selectionMode) ? (
         <SurveyPhotoBottomBar
           activeTab={tab}
           bottomInset={insets.bottom}
@@ -1410,12 +2019,12 @@ export default function SurveyPhotoScreen({
       ) : null}
 
       <SurveyorPickerModal
-        getSurveyorInitials={getSurveyorInitials}
         onChooseSurveyor={chooseSurveyor}
         projectSurveyor={project?.surveyor}
         setSurveyorPicker={setSurveyorPicker}
         surveyor={surveyor}
         surveyorPicker={surveyorPicker}
+        userInitials={authoritativeInitials}
       />
 
       <PhotoReviewModal
@@ -1438,18 +2047,23 @@ export default function SurveyPhotoScreen({
         setRepeatLastType={setRepeatLastType}
       />
 
-      <PhotoViewerModal
-        insets={insets}
-        onClose={closePreview}
-        onCloseToGallery={closePreviewToGallery}
-        onPhotoChange={setPreviewPhoto}
-        onRequestDelete={requestProtectedDelete}
-        onRestore={restoreBinnedPhoto}
-        onSaveCopy={savePhotoCopy}
-        onShare={sharePhoto}
-        previewPhoto={previewPhoto}
-        previewPhotos={previewPhotos}
-      />
+      {previewPhoto ? (
+        <PhotoViewerModal
+          insets={insets}
+          onClose={closePreview}
+          onCloseToGallery={closePreviewToGallery}
+          onPhotoChange={setPreviewPhoto}
+          onRequestDelete={requestProtectedDelete}
+          onRestore={restoreBinnedPhoto}
+          onSaveCopy={savePhotoCopy}
+          onShare={sharePhoto}
+          onUploadSharePoint={uploadPhotoToSharePoint}
+          onUpdateImageType={changePhotoImageType}
+          previewPhoto={previewPhoto}
+          previewPhotos={previewPhotos}
+          sharePointUpload={sharePointUpload}
+        />
+      ) : null}
 
       <PhotoDeleteConfirmModal
         binnedPhotoCount={binnedPhotos.length}
@@ -1464,10 +2078,11 @@ export default function SurveyPhotoScreen({
       />
 
       {saving ? (
-        <View style={styles.saving}>
-          <ActivityIndicator size="large" color={GOLD} />
-          <Text style={styles.savingText}>{savingText}</Text>
-        </View>
+        <PhotoSavingOverlay
+          detail={savingDetail}
+          progress={savingProgress}
+          text={savingText}
+        />
       ) : null}
     </View>
   );

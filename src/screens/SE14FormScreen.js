@@ -18,6 +18,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { reportDevelopmentError } from '../services/security/securityLogger';
 
 import styles, {
   GOLD,
@@ -30,14 +31,21 @@ import { Field } from '../components/FormFields';
 import CollapseSection from '../components/CollapseSection';
 import SE14PhotoField from '../components/SE14PhotoField';
 import LoadingOverlay from '../components/LoadingOverlay';
-import AppBackButton from '../components/AppBackButton';
+import NorthGroupBrandButton from '../components/NorthGroupBrandButton';
+import FormActionBar from '../components/FormActionBar';
 import { STAFF_NAMES } from '../constants/staffNames';
-import { applyProfileDefaults } from '../features/account/accountProfile';
+import { applyProfileDefaults, profileInitials } from '../features/account/accountProfile';
 import {
   getSE14CompletionIssue,
   getSE14FieldCompletionIssue,
+  getSE14RequirementProgress,
   getSE14StartIssue,
+  SE14_END_REQUIREMENTS,
+  SE14_REVIEW_REQUIREMENTS,
+  SE14_SESSION_NUMBER_OPTIONS,
+  SE14_START_REQUIREMENTS,
 } from '../utils/se14Records';
+import { prepareSE14Pdf } from '../export/exportSE14Pdf';
 
 const LAST_SE14_OBSERVER_KEY = 'se14LastObserver';
 const LAST_SE14_PROJECT_KEY = 'se14LastProjectNumber';
@@ -59,11 +67,6 @@ const MARK_TYPE_OPTIONS = [
   'Screw in Concrete',
   'Screw in Kerb',
 ];
-
-const SESSION_NUMBER_OPTIONS = Array.from(
-  { length: 4 },
-  (_, index) => String(index + 1)
-);
 
 const formatMarkLabel = (value) => {
   const trimmed = String(value || '').trim();
@@ -208,43 +211,27 @@ const getCurrentTime = () => {
   return `${hours}:${minutes}`;
 };
 
-const START_REQUIRED_YES_KEYS = new Set([
-  'levelledStart',
-  'antennaNorth',
-  'externalPower',
-]);
+const requirementsForSection = (requirements, section) =>
+  requirements.filter((requirement) => requirement.section === section);
 
-const countCompletedFields = (form, keys) => {
-  return keys.filter((key) => {
-    const value = form[key];
+const SESSION_DETAIL_REQUIREMENTS = requirementsForSection(
+  SE14_START_REQUIREMENTS,
+  'details'
+);
 
-    if (key === 'arpBqr') {
-      const arpBqr = parseMeasurement(value);
-      return arpBqr !== null && Math.abs(arpBqr) <= 0.005;
-    }
+const START_SECTION_REQUIREMENTS = requirementsForSection(
+  SE14_START_REQUIREMENTS,
+  'start'
+);
 
-    if (key.startsWith('photo')) {
-      return Boolean(value?.uri);
-    }
+const END_SECTION_REQUIREMENTS = requirementsForSection(
+  SE14_END_REQUIREMENTS,
+  'end'
+);
 
-    if (typeof value === 'boolean') {
-      if (START_REQUIRED_YES_KEYS.has(key)) {
-        return value === true;
-      }
-      return form.checklistAnswersVersion === 2;
-    }
-
-    return String(value || '').trim().length > 0;
-  }).length;
-};
-
-const SESSION_DETAIL_KEYS = [
-  'markId',
-  'markType',
-  'sessionNumber',
-  'receiverModel',
-  'receiverSerial',
-];
+const START_PHOTO_REQUIREMENTS = START_SECTION_REQUIREMENTS.filter(
+  (requirement) => requirement.key.startsWith('photo')
+);
 
 function DropdownField({
   label,
@@ -354,40 +341,6 @@ function YesNoChecklistRow({
   );
 }
 
-const START_KEYS = [
-  'startDate',
-  'startTime',
-  'measuredToStart',
-  'hmpStart',
-  'bqrStart',
-  'arpBqr',
-  'levelledStart',
-  'antennaNorth',
-  'externalPower',
-  'photoStartMarkId',
-  'photoStartReceiverSerial',
-  'photoStartHeightMeasurement',
-  'photoStartBubble',
-  'photoStartObstructions',
-];
-
-const END_KEYS = [
-  'endDate',
-  'endTime',
-  'measuredToEnd',
-  'hmpEnd',
-  'levelledEnd',
-  'powerStillOn',
-  'markConfirmed',
-  'photoEndMarkId',
-  'photoEndHeightMeasurement',
-];
-
-const FILE_KEYS = [
-  'rawGnssFile',
-  'rinexFile',
-];
-
 const parseMeasurement = (value) => {
   const cleanedValue = String(value || '')
     .trim()
@@ -419,8 +372,11 @@ const getMeasuredToForReceiver = (receiverModel) =>
 export default function SE14FormScreen({
   se14,
   setSE14,
+  recordId,
+  saveSE14DraftProgress,
   saveSE14AsInProgress,
   saveActiveSE14Record,
+  saveSE14ForUploadDay,
   completeSE14FieldSession,
   isInProgress,
   isCompleted,
@@ -444,18 +400,17 @@ export default function SE14FormScreen({
   const rawFileRef = useRef(null);
   const rinexFileRef = useRef(null);
   const commentsRef = useRef(null);
-  const hmpStartAdvanceTimer = useRef(null);
-  const hmpEndAdvanceTimer = useRef(null);
-  const bqrAdvanceTimer = useRef(null);
   const autosaveTimer = useRef(null);
-  const reviewKeyboardSubscription = useRef(null);
   const reviewInputScrollTimers = useRef([]);
+  const activeReviewInputRef = useRef(null);
+  const keyboardTopRef = useRef(Number.POSITIVE_INFINITY);
+  const scrollOffsetRef = useRef(0);
   const saveRecordRef = useRef(saveActiveSE14Record);
   const isReview =
     recordStatus === 'review' ||
     recordStatus === 'complete' ||
+    recordStatus === 'archived' ||
     Boolean(isCompleted);
-  const isFieldSession = Boolean(isInProgress && !isReview);
   const headerMark = formatMarkLabel(se14.markId);
   const headerSession = `SESSION ${se14.sessionNumber || '—'}`;
 
@@ -466,16 +421,13 @@ export default function SE14FormScreen({
     useState(!isInProgress);
 
   const [showSessionEnd, setShowSessionEnd] =
-    useState(false);
+    useState(Boolean(isInProgress && !isReview));
 
   const [showFiles, setShowFiles] =
     useState(false);
 
   const [showComments, setShowComments] =
     useState(false);
-
-  const [keyboardHeight, setKeyboardHeight] =
-    useState(0);
 
   const [editStartDetails, setEditStartDetails] =
     useState(false);
@@ -484,6 +436,9 @@ export default function SE14FormScreen({
     useState(false);
 
   const [isPreparingPdf, setIsPreparingPdf] =
+    useState(false);
+
+  const [isPreparingUpload, setIsPreparingUpload] =
     useState(false);
 
   const [openDropdown, setOpenDropdown] =
@@ -504,41 +459,41 @@ export default function SE14FormScreen({
   const [arpBqrHeightRetried, setArpBqrHeightRetried] =
     useState(false);
 
-  useEffect(() => {
-    const updateKeyboardHeight = (event) => {
-      setKeyboardHeight(Number(event?.endCoordinates?.height) || 0);
-    };
-    const clearKeyboardHeight = () => setKeyboardHeight(0);
-    const subscriptions = [
-      Keyboard.addListener('keyboardWillShow', updateKeyboardHeight),
-      Keyboard.addListener('keyboardDidShow', updateKeyboardHeight),
-      Keyboard.addListener('keyboardWillHide', clearKeyboardHeight),
-      Keyboard.addListener('keyboardDidHide', clearKeyboardHeight),
-    ];
+  const [editingMeasurementKey, setEditingMeasurementKey] =
+    useState(null);
 
-    return () => subscriptions.forEach((subscription) => subscription.remove());
-  }, []);
+  const sessionDetailsProgress = getSE14RequirementProgress(
+    se14,
+    SESSION_DETAIL_REQUIREMENTS
+  );
+  const startProgress = getSE14RequirementProgress(
+    se14,
+    START_SECTION_REQUIREMENTS
+  );
+  const endProgress = getSE14RequirementProgress(
+    se14,
+    END_SECTION_REQUIREMENTS
+  );
+  const filesProgress = getSE14RequirementProgress(
+    se14,
+    SE14_REVIEW_REQUIREMENTS
+  );
+  const startPhotoProgress = getSE14RequirementProgress(
+    se14,
+    START_PHOTO_REQUIREMENTS
+  );
 
-  const sessionDetailsCompleted =
-    countCompletedFields(se14, SESSION_DETAIL_KEYS);
-
-  const startCompleted =
-    countCompletedFields(se14, START_KEYS);
-
-  const endCompleted =
-    countCompletedFields(se14, END_KEYS);
-
-  const filesCompleted =
-    countCompletedFields(se14, FILE_KEYS);
+  const sessionDetailsCompleted = sessionDetailsProgress.complete;
+  const startCompleted = startProgress.complete;
+  const endCompleted = endProgress.complete;
+  const filesCompleted = filesProgress.complete;
 
   const sessionDetailsComplete =
-    sessionDetailsCompleted === SESSION_DETAIL_KEYS.length;
-
+    sessionDetailsCompleted === sessionDetailsProgress.total;
   const sessionStartComplete =
-    startCompleted === START_KEYS.length;
-
+    startCompleted === startProgress.total;
   const sessionEndComplete =
-    endCompleted === END_KEYS.length;
+    endCompleted === endProgress.total;
 
   const arpBqrValue =
     parseMeasurement(se14.arpBqr);
@@ -565,6 +520,16 @@ export default function SE14FormScreen({
     }));
   };
 
+  const beginMeasurementEdit = (key) => {
+    setEditingMeasurementKey(key);
+  };
+
+  const finishMeasurementEdit = (key) => {
+    setEditingMeasurementKey((current) =>
+      current === key ? null : current
+    );
+  };
+
   const scrollToSection = (section, extraOffset = 0) => {
     setTimeout(() => {
       scrollRef.current?.scrollTo({
@@ -587,45 +552,49 @@ export default function SE14FormScreen({
   };
 
   const clearReviewInputVisibilityWork = () => {
-    reviewKeyboardSubscription.current?.remove();
-    reviewKeyboardSubscription.current = null;
     reviewInputScrollTimers.current.forEach((timer) => clearTimeout(timer));
     reviewInputScrollTimers.current = [];
   };
 
-  const revealReviewInput = (section, extraOffset = 0) => {
+  const keepReviewInputVisible = (inputRef, clearance = 22) => {
+    const input = inputRef?.current;
+    if (!input?.measureInWindow) return;
+
+    input.measureInWindow((_x, y, _width, height) => {
+      const keyboardTop = keyboardTopRef.current;
+      if (!Number.isFinite(keyboardTop)) return;
+
+      const overlap = y + height + clearance - keyboardTop;
+      if (overlap <= 0) return;
+
+      scrollRef.current?.scrollTo({
+        y: Math.max(0, scrollOffsetRef.current + overlap),
+        animated: true,
+      });
+    });
+  };
+
+  const revealReviewInput = (inputRef, section, extraOffset = 0) => {
     clearReviewInputVisibilityWork();
+    activeReviewInputRef.current = inputRef;
 
     const scrollForInput = () => {
       scrollToSection(section, extraOffset);
+      const visibilityTimer = setTimeout(
+        () => keepReviewInputVisible(inputRef),
+        210
+      );
+      reviewInputScrollTimers.current.push(visibilityTimer);
     };
-
-    const keyboardSubscription = Keyboard.addListener(
-      'keyboardDidShow',
-      () => {
-        keyboardSubscription.remove();
-        reviewKeyboardSubscription.current = null;
-        scrollForInput();
-        const followUpTimer = setTimeout(scrollForInput, 240);
-        reviewInputScrollTimers.current.push(followUpTimer);
-      }
-    );
-
-    reviewKeyboardSubscription.current = keyboardSubscription;
     scrollForInput();
 
-    [260, 700].forEach((delay) => {
-      const timer = setTimeout(scrollForInput, delay);
+    [360, 760].forEach((delay) => {
+      const timer = setTimeout(
+        () => keepReviewInputVisible(inputRef),
+        delay
+      );
       reviewInputScrollTimers.current.push(timer);
     });
-
-    const cleanupTimer = setTimeout(() => {
-      keyboardSubscription.remove();
-      if (reviewKeyboardSubscription.current === keyboardSubscription) {
-        reviewKeyboardSubscription.current = null;
-      }
-    }, 1800);
-    reviewInputScrollTimers.current.push(cleanupTimer);
   };
 
   const focusReviewInputStep = (
@@ -634,7 +603,7 @@ export default function SE14FormScreen({
     extraOffset = 0
   ) => {
     setOpenDropdown(null);
-    revealReviewInput(section, extraOffset);
+    revealReviewInput(inputRef, section, extraOffset);
     setTimeout(() => inputRef.current?.focus(), 100);
   };
 
@@ -657,21 +626,6 @@ export default function SE14FormScreen({
   };
 
   const returnToSessionDetailsMarkId = () => {
-    if (hmpStartAdvanceTimer.current) {
-      clearTimeout(hmpStartAdvanceTimer.current);
-      hmpStartAdvanceTimer.current = null;
-    }
-
-    if (hmpEndAdvanceTimer.current) {
-      clearTimeout(hmpEndAdvanceTimer.current);
-      hmpEndAdvanceTimer.current = null;
-    }
-
-    if (bqrAdvanceTimer.current) {
-      clearTimeout(bqrAdvanceTimer.current);
-      bqrAdvanceTimer.current = null;
-    }
-
     setOpenDropdown(null);
     setShowSessionDetails(true);
     setShowSessionStart(false);
@@ -683,6 +637,7 @@ export default function SE14FormScreen({
     setGuidedChecklistKey(null);
     setArpBqrRetryRequired(false);
     setArpBqrHeightRetried(false);
+    setEditingMeasurementKey(null);
     Keyboard.dismiss();
 
     setTimeout(() => {
@@ -731,27 +686,12 @@ export default function SE14FormScreen({
     scrollToSection('end', 220);
   };
 
-  const updateHmpWithGuidance = (
-    key,
-    value,
-    nextStep,
-    timerRef
-  ) => {
+  const updateHmpWithGuidance = (key, value) => {
     if (arpBqrRetryRequired) {
       setArpBqrHeightRetried(true);
     }
 
     updateField(key, value);
-
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-
-    if (!hasMinimumHeightDigits(value)) return;
-
-    timerRef.current = setTimeout(() => {
-      nextStep?.();
-    }, 650);
   };
 
   const updateBqrWithGuidance = (value) => {
@@ -760,29 +700,10 @@ export default function SE14FormScreen({
     }
 
     updateField('bqrStart', value);
-
-    if (bqrAdvanceTimer.current) {
-      clearTimeout(bqrAdvanceTimer.current);
-    }
-
-    if (!hasMinimumHeightDigits(value)) return;
-
-    bqrAdvanceTimer.current = setTimeout(() => {
-      focusStartChecklist();
-    }, 850);
   };
 
   useEffect(
     () => () => {
-      if (hmpStartAdvanceTimer.current) {
-        clearTimeout(hmpStartAdvanceTimer.current);
-      }
-      if (hmpEndAdvanceTimer.current) {
-        clearTimeout(hmpEndAdvanceTimer.current);
-      }
-      if (bqrAdvanceTimer.current) {
-        clearTimeout(bqrAdvanceTimer.current);
-      }
       if (autosaveTimer.current) {
         clearTimeout(autosaveTimer.current);
       }
@@ -790,6 +711,31 @@ export default function SE14FormScreen({
     },
     []
   );
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener(
+      'keyboardDidShow',
+      (event) => {
+        keyboardTopRef.current = event?.endCoordinates?.screenY ??
+          Number.POSITIVE_INFINITY;
+
+        const timer = setTimeout(
+          () => keepReviewInputVisible(activeReviewInputRef.current),
+          80
+        );
+        reviewInputScrollTimers.current.push(timer);
+      }
+    );
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardTopRef.current = Number.POSITIVE_INFINITY;
+      activeReviewInputRef.current = null;
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     saveRecordRef.current = saveActiveSE14Record;
@@ -814,27 +760,33 @@ export default function SE14FormScreen({
   }, [isInProgress, se14]);
 
   useEffect(() => {
-    if (sessionDetailsCompleted === SESSION_DETAIL_KEYS.length) {
+    if (sessionDetailsComplete) {
       setShowSessionDetails(false);
-      if (startCompleted < START_KEYS.length) {
+      if (!sessionStartComplete) {
         setShowSessionStart(true);
       }
     }
-  }, [sessionDetailsCompleted, startCompleted]);
+  }, [sessionDetailsComplete, sessionStartComplete]);
 
   useEffect(() => {
-    if (startCompleted === START_KEYS.length) {
+    if (
+      sessionStartComplete &&
+      !['hmpStart', 'bqrStart', 'arpBqr'].includes(editingMeasurementKey)
+    ) {
       setOpenDropdown(null);
       setShowSessionStart(false);
     }
-  }, [startCompleted]);
+  }, [editingMeasurementKey, sessionStartComplete]);
 
   useEffect(() => {
-    if (endCompleted === END_KEYS.length) {
+    if (
+      sessionEndComplete &&
+      editingMeasurementKey !== 'hmpEnd'
+    ) {
       setOpenDropdown(null);
       setShowSessionEnd(false);
     }
-  }, [endCompleted]);
+  }, [editingMeasurementKey, sessionEndComplete]);
 
   useEffect(() => {
     const loadLastObserver = async () => {
@@ -870,7 +822,7 @@ export default function SE14FormScreen({
           };
         });
       } catch (error) {
-        console.log(
+        reportDevelopmentError(
           'Could not load last SE-14 observer:',
           error
         );
@@ -901,7 +853,7 @@ export default function SE14FormScreen({
           setCustomReceiverSerials(parsedSerials);
         }
       } catch (error) {
-        console.log(
+        reportDevelopmentError(
           'Could not load custom receiver serials:',
           error
         );
@@ -928,7 +880,7 @@ export default function SE14FormScreen({
           setCustomMarkTypes(parsedMarkTypes);
         }
       } catch (error) {
-        console.log(
+        reportDevelopmentError(
           'Could not load custom mark types:',
           error
         );
@@ -950,7 +902,7 @@ export default function SE14FormScreen({
         name
       );
     } catch (error) {
-      console.log(
+      reportDevelopmentError(
         'Could not save last SE-14 observer:',
         error
       );
@@ -972,7 +924,7 @@ export default function SE14FormScreen({
         );
       }
     } catch (error) {
-      console.log(
+      reportDevelopmentError(
         'Could not save last SE-14 project number:',
         error
       );
@@ -1257,17 +1209,8 @@ export default function SE14FormScreen({
     }
 
     setArpBqrRetryRequired(true);
-
-    if (hmpStartAdvanceTimer.current) {
-      clearTimeout(hmpStartAdvanceTimer.current);
-    }
-    if (bqrAdvanceTimer.current) {
-      clearTimeout(bqrAdvanceTimer.current);
-    }
-
     setShowSessionStart(true);
     setGuidedChecklistKey(null);
-    scrollToSection('start', 95);
   }, [
     se14.hmpStart,
     se14.bqrStart,
@@ -1404,6 +1347,11 @@ export default function SE14FormScreen({
     );
   };
 
+  const saveStartProgress = async () => {
+    Keyboard.dismiss();
+    await saveSE14DraftProgress?.();
+  };
+
   const moveToEndSession = async () => {
     if (arpBqrRetryRequired && !arpBqrHeightRetried) {
       showIssue({
@@ -1458,6 +1406,34 @@ export default function SE14FormScreen({
     }
   };
 
+  const prepareAndSaveForDay = async () => {
+    if (isPreparingPdf || isPreparingUpload) return;
+
+    const issue = getSE14CompletionIssue(se14);
+
+    if (issue) {
+      showIssue(issue);
+      return;
+    }
+
+    setIsPreparingUpload(true);
+
+    try {
+      const result = await prepareSE14Pdf(se14, profileInitials(accountProfile));
+      if (!result?.exportUri) return;
+
+      const saved = await saveSE14ForUploadDay?.({
+        uri: result.exportUri,
+        name: result.exportName,
+        mimeType: 'application/pdf',
+      });
+
+      if (saved) setScreen('sessionCompleted');
+    } finally {
+      setIsPreparingUpload(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -1481,10 +1457,11 @@ export default function SE14FormScreen({
           imageStyle={gnssStyles.compactHeaderImage}
         >
           <View style={gnssStyles.compactHeaderShade} />
-          <AppBackButton
-            label={backLabel}
+          <NorthGroupBrandButton
             style={gnssStyles.compactBackButton}
             onPress={() => setScreen('formMenu')}
+            accessibilityLabel={`NorthGroup One, return to ${backLabel}`}
+            accessibilityHint={`Returns to ${backLabel}`}
           />
 
           <View style={gnssStyles.compactHeaderCopy}>
@@ -1504,19 +1481,26 @@ export default function SE14FormScreen({
         contentContainerStyle={[
           gnssStyles.scrollContainer,
           {
-            paddingBottom: keyboardHeight > 0
-              ? keyboardHeight + 240
-              : Math.max(insets.bottom, 12),
+            paddingBottom: Math.max(insets.bottom, 12),
           },
         ]}
         automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         scrollEventThrottle={16}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: true }
+          {
+            useNativeDriver: true,
+            listener: (event) => {
+              scrollOffsetRef.current =
+                event.nativeEvent.contentOffset.y;
+            },
+          }
         )}
       >
 
@@ -1531,10 +1515,11 @@ export default function SE14FormScreen({
         <View style={gnssStyles.heroShade} />
 
         <View style={gnssStyles.topBar}>
-          <AppBackButton
-            label={backLabel}
+          <NorthGroupBrandButton
             style={gnssStyles.topAction}
             onPress={() => setScreen('formMenu')}
+            accessibilityLabel={`NorthGroup One, return to ${backLabel}`}
+            accessibilityHint={`Returns to ${backLabel}`}
           />
 
           <View
@@ -1550,9 +1535,11 @@ export default function SE14FormScreen({
               ]}
             >
               {isReview
-                ? recordStatus === 'complete'
-                  ? 'EXPORTED'
-                  : 'REVIEW'
+                ? recordStatus === 'archived'
+                  ? 'ARCHIVED'
+                  : recordStatus === 'complete'
+                    ? 'EXPORTED'
+                    : 'REVIEW'
                 : isInProgress
                   ? 'END SESSION'
                   : 'START SESSION'}
@@ -1569,7 +1556,12 @@ export default function SE14FormScreen({
               <Text style={gnssStyles.topActionText}>Clear</Text>
             </TouchableOpacity>
           ) : (
-            <View style={gnssStyles.topAction} />
+            <View
+              style={[
+                gnssStyles.topAction,
+                gnssStyles.topActionRightSpacer,
+              ]}
+            />
           )}
         </View>
 
@@ -1581,7 +1573,9 @@ export default function SE14FormScreen({
           ]}
         >
           {isReview
-            ? 'Review and Complete'
+            ? recordStatus === 'archived'
+              ? 'Archived Session'
+              : 'Review and Complete'
             : isInProgress
               ? 'End Session'
               : 'Start Session'}
@@ -1598,7 +1592,7 @@ export default function SE14FormScreen({
           bodyY.current = event.nativeEvent.layout.y;
         }}
       >
-        {!isInProgress ? (
+        {(!isInProgress || editStartDetails) ? (
           <View
             style={styles.projectDetailsCard}
             onLayout={(event) => rememberSectionPosition('project', event)}
@@ -1617,73 +1611,100 @@ export default function SE14FormScreen({
           </View>
         ) : null}
 
-        {isReview ? (
-          <>
-          <View style={gnssStyles.reviewObserverCard}>
-            <Text style={gnssStyles.summaryLabel}>OBSERVER</Text>
-            <Text style={gnssStyles.summaryValue}>{se14.observer || '—'}</Text>
-          </View>
-          <Text style={gnssStyles.reviewObserverSubtitle}>
-            {recordStatus === 'complete'
-              ? 'Exported record'
-              : 'Review details and add office filenames'}
-          </Text>
-
+        {isInProgress ? (
           <View style={gnssStyles.reviewSummaryCard}>
             <View style={gnssStyles.reviewSummaryHeader}>
               <View style={gnssStyles.reviewSummaryHeading}>
-                <Text style={gnssStyles.reviewSummaryTitle}>Start Details</Text>
+                <Text style={gnssStyles.reviewSummaryTitle}>
+                  Start Session Details
+                </Text>
                 <Text style={gnssStyles.reviewSummarySubtitle}>
-                  {se14.projectNumber || '—'} · {headerMark} · Session {se14.sessionNumber || '—'}
+                  {isReview
+                    ? 'Saved start record · available for correction'
+                    : 'Review or correct the saved Start Session before finishing'}
                 </Text>
               </View>
               <TouchableOpacity
                 style={gnssStyles.unlockButton}
                 activeOpacity={0.82}
                 onPress={() => {
+                  if (editStartDetails) {
+                    saveActiveSE14Record?.({ silent: true });
+                  }
                   setEditStartDetails((current) => !current);
                   setShowSessionDetails(true);
                   setShowSessionStart(true);
                 }}
               >
                 <Text style={gnssStyles.unlockButtonText}>
-                  {editStartDetails ? 'LOCK' : 'UNLOCK & EDIT'}
+                  {editStartDetails ? 'DONE' : 'EDIT START'}
                 </Text>
               </TouchableOpacity>
             </View>
             {!editStartDetails ? (
               <View style={gnssStyles.lockedSummary}>
-                <View style={gnssStyles.summaryCell}>
-                  <Text style={gnssStyles.summaryLabel}>JOB</Text>
-                  <Text style={gnssStyles.summaryValue}>{se14.projectNumber || '—'}</Text>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
+                  <Text style={gnssStyles.summaryLabel}>OBSERVER</Text>
+                  <Text style={gnssStyles.summaryValue}>{se14.observer || '—'}</Text>
                 </View>
-                <View style={gnssStyles.summaryCell}>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
                   <Text style={gnssStyles.summaryLabel}>PM / MARK</Text>
-                  <Text style={gnssStyles.summaryValue}>{se14.markId || '—'}</Text>
+                  <Text style={gnssStyles.summaryValue}>{headerMark}</Text>
                 </View>
-                <View style={gnssStyles.summaryCell}>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
                   <Text style={gnssStyles.summaryLabel}>SESSION</Text>
                   <Text style={gnssStyles.summaryValue}>{se14.sessionNumber || '—'}</Text>
                 </View>
-                <View style={gnssStyles.summaryCell}>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
+                  <Text style={gnssStyles.summaryLabel}>MARK TYPE</Text>
+                  <Text style={gnssStyles.summaryValue}>{se14.markType || '—'}</Text>
+                </View>
+                <View style={gnssStyles.summaryWideCell}>
+                  <Text style={gnssStyles.summaryLabel}>RECEIVER / SERIAL</Text>
+                  <Text style={gnssStyles.summaryValue} numberOfLines={2}>
+                    {[se14.receiverModel, se14.receiverSerial].filter(Boolean).join(' · ') || '—'}
+                  </Text>
+                </View>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
                   <Text style={gnssStyles.summaryLabel}>START HMP</Text>
                   <Text style={gnssStyles.summaryValue}>
                     {se14.hmpStart ? `${se14.hmpStart} m` : '—'}
                   </Text>
                 </View>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
+                  <Text style={gnssStyles.summaryLabel}>START BQR</Text>
+                  <Text style={gnssStyles.summaryValue}>
+                    {se14.bqrStart ? `${se14.bqrStart} m` : '—'}
+                  </Text>
+                </View>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
+                  <Text style={gnssStyles.summaryLabel}>MEASURED TO</Text>
+                  <Text style={gnssStyles.summaryValue} numberOfLines={2}>
+                    {se14.measuredToStart || '—'}
+                  </Text>
+                </View>
+                <View style={[gnssStyles.summaryCell, gnssStyles.summaryHalfCell]}>
+                  <Text style={gnssStyles.summaryLabel}>ARP-BQR</Text>
+                  <Text style={gnssStyles.summaryValue}>{se14.arpBqr || '—'}</Text>
+                </View>
+                <View style={gnssStyles.summaryWideCell}>
+                  <Text style={gnssStyles.summaryLabel}>STARTED / EVIDENCE</Text>
+                  <Text style={gnssStyles.summaryValue}>
+                    {se14.startDate || '—'} {se14.startTime || ''} · {startPhotoProgress.complete}/{startPhotoProgress.total} required photos
+                  </Text>
+                </View>
               </View>
             ) : null}
           </View>
-          </>
         ) : null}
 
-        {(!isInProgress || (isReview && editStartDetails)) && (
+        {(!isInProgress || editStartDetails) && (
           <>
 
         <View onLayout={(event) => rememberSectionPosition('details', event)}>
         <CollapseSection
           title="Session Details"
-          subtitle={`${sessionDetailsCompleted} of ${SESSION_DETAIL_KEYS.length} fields completed`}
+          subtitle={`${sessionDetailsCompleted} of ${sessionDetailsProgress.total} fields completed`}
           workflow
           complete={sessionDetailsComplete}
           current={!sessionDetailsComplete}
@@ -1715,7 +1736,7 @@ export default function SE14FormScreen({
                 label="Session Number"
                 value={se14.sessionNumber}
                 placeholder="Select"
-                options={SESSION_NUMBER_OPTIONS}
+                    options={SE14_SESSION_NUMBER_OPTIONS}
                 open={openDropdown === 'sessionNumber'}
                 onToggle={() =>
                   setOpenDropdown(
@@ -1807,7 +1828,6 @@ export default function SE14FormScreen({
                 'receiverSerial',
                 value,
                 () => {
-                  setShowSessionDetails(false);
                   setShowSessionStart(true);
                   focusFieldStep(hmpStartRef, 'start', 95);
                 }
@@ -1830,7 +1850,7 @@ export default function SE14FormScreen({
         <View onLayout={(event) => rememberSectionPosition('start', event)}>
         <CollapseSection
           title="Session Start"
-          subtitle={`${startCompleted} of ${START_KEYS.length} items completed`}
+          subtitle={`${startCompleted} of ${startProgress.total} items completed`}
           workflow
           complete={sessionStartComplete}
           current={sessionDetailsComplete && !sessionStartComplete}
@@ -1869,9 +1889,6 @@ export default function SE14FormScreen({
               )
             }
             onSelect={(value) => {
-              if (hmpStartAdvanceTimer.current) {
-                clearTimeout(hmpStartAdvanceTimer.current);
-              }
               selectDropdownValue(
                 'measuredToStart',
                 value,
@@ -1888,19 +1905,13 @@ export default function SE14FormScreen({
             placeholder="Metres"
             keyboardType="decimal-pad"
             returnKeyType="next"
-            onSubmitEditing={() => {
-              if (hmpStartAdvanceTimer.current) {
-                clearTimeout(hmpStartAdvanceTimer.current);
-              }
-              focusFieldStep(bqrStartRef, 'start', 205);
-            }}
+            onFocus={() => beginMeasurementEdit('hmpStart')}
+            onBlur={() => finishMeasurementEdit('hmpStart')}
+            onSubmitEditing={() =>
+              focusFieldStep(bqrStartRef, 'start', 205)
+            }
             onChangeText={(value) =>
-              updateHmpWithGuidance(
-                'hmpStart',
-                value,
-                () => focusFieldStep(bqrStartRef, 'start', 205),
-                hmpStartAdvanceTimer
-              )
+              updateHmpWithGuidance('hmpStart', value)
             }
           />
 
@@ -1912,12 +1923,9 @@ export default function SE14FormScreen({
             placeholder="Metres"
             keyboardType="decimal-pad"
             returnKeyType="done"
-            onSubmitEditing={() => {
-              if (bqrAdvanceTimer.current) {
-                clearTimeout(bqrAdvanceTimer.current);
-              }
-              focusStartChecklist();
-            }}
+            onFocus={() => beginMeasurementEdit('bqrStart')}
+            onBlur={() => finishMeasurementEdit('bqrStart')}
+            onSubmitEditing={focusStartChecklist}
             onChangeText={(value) =>
               updateBqrWithGuidance(value)
             }
@@ -1928,6 +1936,8 @@ export default function SE14FormScreen({
             value={se14.arpBqr}
             placeholder="Example: 0.003"
             keyboardType="decimal-pad"
+            onFocus={() => beginMeasurementEdit('arpBqr')}
+            onBlur={() => finishMeasurementEdit('arpBqr')}
             onChangeText={(value) =>
               updateField(
                 'arpBqr',
@@ -2135,10 +2145,7 @@ export default function SE14FormScreen({
                 value
               )
             }
-            onAccepted={() => {
-              setShowSessionStart(false);
-              scrollToSection('start', 2190);
-            }}
+            onAccepted={() => scrollToSection('start', 2190)}
           />
         </CollapseSection>
         </View>
@@ -2148,6 +2155,15 @@ export default function SE14FormScreen({
 
         {isInProgress && (
           <>
+        {!isReview ? (
+          <View style={gnssStyles.endStageBanner}>
+            <Text style={gnssStyles.endStageEyebrow}>END SESSION · STILL REQUIRED</Text>
+            <Text style={gnssStyles.endStageText}>
+              Start details above remain available for review. Complete the End Session fields below when the receiver is ready to be packed up.
+            </Text>
+          </View>
+        ) : null}
+
         {isReview ? (
           <View style={gnssStyles.reviewSummaryCard}>
             <View style={gnssStyles.reviewSummaryHeader}>
@@ -2158,12 +2174,15 @@ export default function SE14FormScreen({
                 style={gnssStyles.unlockButton}
                 activeOpacity={0.82}
                 onPress={() => {
+                  if (editEndDetails) {
+                    saveActiveSE14Record?.({ silent: true });
+                  }
                   setEditEndDetails((current) => !current);
                   setShowSessionEnd(true);
                 }}
               >
                 <Text style={gnssStyles.unlockButtonText} numberOfLines={1}>
-                  {editEndDetails ? 'LOCK' : 'UNLOCK & EDIT'}
+                  {editEndDetails ? 'DONE' : 'EDIT END'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -2207,6 +2226,7 @@ export default function SE14FormScreen({
                   if (showFiles) {
                     Keyboard.dismiss();
                     setShowFiles(false);
+                    saveActiveSE14Record?.({ silent: true });
                   } else {
                     openReviewSection('files', setShowFiles, rawFileRef);
                   }
@@ -2217,7 +2237,9 @@ export default function SE14FormScreen({
                 <View style={gnssStyles.reviewNestedRowCopy}>
                   <Text style={gnssStyles.reviewNestedTitle}>Data Files</Text>
                   <Text style={gnssStyles.reviewNestedSubtitle}>
-                    {filesCompleted ? `${filesCompleted} of ${FILE_KEYS.length} entered` : 'Optional · 0 of 2 entered'}
+                    {filesCompleted
+                      ? `${filesCompleted} of ${filesProgress.total} entered`
+                      : `0 of ${filesProgress.total} entered`}
                   </Text>
                 </View>
                 <Text style={gnssStyles.reviewNestedAction}>
@@ -2232,7 +2254,7 @@ export default function SE14FormScreen({
                     inputRef={rawFileRef}
                     value={se14.rawGnssFile}
                     returnKeyType="next"
-                    onFocus={() => revealReviewInput('files')}
+                    onFocus={() => revealReviewInput(rawFileRef, 'files')}
                     onSubmitEditing={() =>
                       focusReviewInputStep(rinexFileRef, 'files', 85)
                     }
@@ -2246,10 +2268,11 @@ export default function SE14FormScreen({
                     inputRef={rinexFileRef}
                     value={se14.rinexFile}
                     returnKeyType="done"
-                    onFocus={() => revealReviewInput('files', 85)}
+                    onFocus={() => revealReviewInput(rinexFileRef, 'files', 85)}
                     onSubmitEditing={() => {
                       Keyboard.dismiss();
                       setShowFiles(false);
+                      saveActiveSE14Record?.({ silent: true });
                     }}
                     onChangeText={(value) =>
                       updateField('rinexFile', value)
@@ -2279,7 +2302,7 @@ export default function SE14FormScreen({
 
         <CollapseSection
           title="Session End"
-          subtitle={`${endCompleted} of ${END_KEYS.length} items completed`}
+          subtitle={`${endCompleted} of ${endProgress.total} items completed`}
           workflow
           complete={sessionEndComplete}
           current={!sessionEndComplete}
@@ -2304,9 +2327,6 @@ export default function SE14FormScreen({
               )
             }
             onSelect={(value) => {
-              if (hmpEndAdvanceTimer.current) {
-                clearTimeout(hmpEndAdvanceTimer.current);
-              }
               selectDropdownValue(
                 'measuredToEnd',
                 value,
@@ -2323,19 +2343,11 @@ export default function SE14FormScreen({
             placeholder="Metres"
             keyboardType="decimal-pad"
             returnKeyType="next"
-            onSubmitEditing={() => {
-              if (hmpEndAdvanceTimer.current) {
-                clearTimeout(hmpEndAdvanceTimer.current);
-              }
-              focusEndChecklist();
-            }}
+            onFocus={() => beginMeasurementEdit('hmpEnd')}
+            onBlur={() => finishMeasurementEdit('hmpEnd')}
+            onSubmitEditing={focusEndChecklist}
             onChangeText={(value) =>
-              updateHmpWithGuidance(
-                'hmpEnd',
-                value,
-                focusEndChecklist,
-                hmpEndAdvanceTimer
-              )
+              updateHmpWithGuidance('hmpEnd', value)
             }
           />
 
@@ -2461,10 +2473,7 @@ export default function SE14FormScreen({
                 value
               )
             }
-            onAccepted={() => {
-              setShowSessionEnd(false);
-              scrollToSection('end', 1080);
-            }}
+            onAccepted={() => scrollToSection('end', 1080)}
           />
         </CollapseSection>
         </View>
@@ -2486,6 +2495,7 @@ export default function SE14FormScreen({
               if (showComments) {
                 Keyboard.dismiss();
                 setShowComments(false);
+                saveActiveSE14Record?.({ silent: true });
               } else {
                 openReviewSection('comments', setShowComments, commentsRef);
               }
@@ -2513,7 +2523,7 @@ export default function SE14FormScreen({
                 inputRef={commentsRef}
                 value={se14.comments}
                 multiline
-                onFocus={() => revealReviewInput('comments')}
+                onFocus={() => revealReviewInput(commentsRef, 'comments')}
                 onChangeText={(value) =>
                   updateField(
                     'comments',
@@ -2532,24 +2542,40 @@ export default function SE14FormScreen({
         )}
 
         {!isInProgress ? (
-          <TouchableOpacity
-            style={styles.exportButton}
-            activeOpacity={0.8}
-            onPress={moveToEndSession}
-          >
-            <Text style={styles.exportButtonText}>
-              Session Started
-            </Text>
-          </TouchableOpacity>
-        ) : isReview ? (
-          <TouchableOpacity
+          <View style={gnssStyles.startActionGroup}>
+            <TouchableOpacity
+              style={gnssStyles.saveProgressButton}
+              activeOpacity={0.82}
+              onPress={saveStartProgress}
+            >
+              <Text style={gnssStyles.saveProgressButtonText}>
+                Save Progress
+              </Text>
+              <Text style={gnssStyles.saveProgressButtonHint}>
+                Keep this as an incomplete Start Session draft
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
               style={styles.exportButton}
               activeOpacity={0.8}
-              onPress={prepareAndExportPdf}
-              disabled={isPreparingPdf}
+              onPress={moveToEndSession}
             >
-              <Text style={styles.exportButtonText}>Export</Text>
+              <Text style={styles.exportButtonText}>
+                Session Started
+              </Text>
             </TouchableOpacity>
+          </View>
+        ) : isReview ? (
+          <FormActionBar
+            onExport={prepareAndExportPdf}
+            onUpload={prepareAndSaveForDay}
+            exporting={isPreparingPdf}
+            uploading={isPreparingUpload}
+            uploadLabel="Save to Day"
+            uploadIcon="archive-outline"
+            subtitle="Export a copy now or save this session into its offline day folder for later upload."
+          />
         ) : (
           <TouchableOpacity
             style={styles.exportButton}
@@ -2563,8 +2589,8 @@ export default function SE14FormScreen({
         )}
       </View>
       </Animated.ScrollView>
-      {isPreparingPdf ? (
-        <LoadingOverlay text="Preparing PDF…" />
+      {isPreparingPdf || isPreparingUpload ? (
+        <LoadingOverlay text={isPreparingUpload ? 'Saving session on this phone…' : 'Preparing PDF…'} />
       ) : null}
     </View>
   );
@@ -2600,7 +2626,7 @@ const gnssStyles = StyleSheet.create({
     backgroundColor: 'rgba(4,28,48,0.83)',
   },
   compactBackButton: {
-    width: 112,
+    width: 136,
   },
   compactHeaderCopy: {
     flex: 1,
@@ -2628,23 +2654,7 @@ const gnssStyles = StyleSheet.create({
     marginTop: 1,
   },
   compactHeaderSpacer: {
-    width: 112,
-  },
-  compactSaveButton: {
-    minWidth: 52,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-    backgroundColor: 'rgba(214,168,79,0.16)',
-    borderWidth: 1,
-    borderColor: 'rgba(214,168,79,0.56)',
-  },
-  compactSaveText: {
-    color: GOLD,
-    fontSize: 10,
-    fontWeight: '900',
+    width: 136,
   },
   hero: {
     paddingHorizontal: 17,
@@ -2665,12 +2675,16 @@ const gnssStyles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   topAction: {
-    width: 112,
+    width: 136,
     minHeight: 40,
     justifyContent: 'center',
   },
   topActionRight: {
+    width: 60,
     alignItems: 'flex-end',
+  },
+  topActionRightSpacer: {
+    width: 60,
   },
   topActionText: {
     color: GOLD,
@@ -2815,6 +2829,9 @@ const gnssStyles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
   },
+  summaryHalfCell: {
+    width: '50%',
+  },
   summaryWideCell: {
     width: '100%',
     minHeight: 55,
@@ -2860,20 +2877,6 @@ const gnssStyles = StyleSheet.create({
     padding: 13,
     marginBottom: 12,
   },
-  reviewObserverCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(214,168,79,0.42)',
-    backgroundColor: '#0A263E',
-    paddingHorizontal: 13,
-    paddingVertical: 11,
-    marginBottom: 4,
-  },
-  reviewObserverSubtitle: {
-    color: '#AFC2D2',
-    fontSize: 11,
-    marginBottom: 10,
-  },
   reviewSummaryHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -2894,6 +2897,27 @@ const gnssStyles = StyleSheet.create({
     color: '#AFC2D2',
     fontSize: 10,
     marginTop: 2,
+  },
+  endStageBanner: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(214,168,79,0.42)',
+    backgroundColor: '#102F49',
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    marginBottom: 12,
+  },
+  endStageEyebrow: {
+    color: GOLD,
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.9,
+  },
+  endStageText: {
+    color: '#D3DEE7',
+    fontSize: 11,
+    lineHeight: 17,
+    marginTop: 4,
   },
   reviewNestedSection: {
     marginTop: 10,
@@ -2973,6 +2997,30 @@ const gnssStyles = StyleSheet.create({
     lineHeight: 15,
     fontWeight: '700',
     textAlign: 'right',
+  },
+  startActionGroup: {
+    gap: 10,
+  },
+  saveProgressButton: {
+    minHeight: 58,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(214,168,79,0.62)',
+    backgroundColor: '#102F49',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  saveProgressButtonText: {
+    color: GOLD,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  saveProgressButtonHint: {
+    color: '#C8D5DF',
+    fontSize: 9,
+    marginTop: 3,
   },
   yesNoRow: {
     minHeight: 62,

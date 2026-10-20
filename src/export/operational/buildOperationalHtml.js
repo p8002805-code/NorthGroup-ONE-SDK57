@@ -14,7 +14,7 @@ const imageAssetToBase64 = async (assetModule) => {
     await asset.downloadAsync();
     let uri = asset.localUri || asset.uri;
     if (!uri) return null;
-    if (uri.startsWith('http://') || uri.startsWith('https://')) {
+    if (uri.startsWith('https://')) {
       const downloaded = await FileSystem.downloadAsync(uri, `${FileSystem.cacheDirectory}operational-export-asset`);
       uri = downloaded.uri;
     }

@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  ActivityIndicator,
   Image,
   Pressable,
   ScrollView,
@@ -15,9 +16,9 @@ export default function PhotoGalleryView({
   activePhotos,
   availableGalleryTypes,
   binnedPhotos,
-  bottomActionOffset,
   exitSelectionMode,
   exportSelectedPhotos,
+  uploadSelectedPhotosToSharePoint,
   galleryGridLayoutRef,
   galleryPhotos,
   galleryScrollRef,
@@ -33,22 +34,42 @@ export default function PhotoGalleryView({
   requestDeleteSelectedFromBin,
   requestEmptyBin,
   restoreSelectedFromBin,
+  safeAreaBottom,
   selectedGalleryPhotos,
   selectedPhotoIds,
   selectionMode,
+  sharePointUpload,
   setGalleryType,
   setLibraryMode,
   setSelectionMode,
   togglePhotoSelection,
 }) {
+  const uploadBusy = Boolean(sharePointUpload?.active);
+  const selectedUploadBusy =
+    uploadBusy && sharePointUpload?.scope === "selected";
+  const selectedUploadPercent = Math.round(
+    Math.max(0, Math.min(1, Number(sharePointUpload?.progress) || 0)) * 100,
+  );
+  const selectionButtonLabel = selectionMode ? "Cancel" : "Select";
+  const selectionDockBottom = Math.max(Number(safeAreaBottom) || 0, 7) + 8;
+  const toggleSelectionMode = () => {
+    if (selectionMode) exitSelectionMode();
+    else setSelectionMode(true);
+  };
+
   return (
-    <>
+    <View style={styles.galleryPane}>
       <ScrollView
         ref={galleryScrollRef}
         style={styles.body}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         contentContainerStyle={[
           styles.libraryContent,
-          selectionMode && styles.libraryContentSelecting,
+          selectionMode && {
+            paddingBottom: selectionDockBottom + 78,
+          },
         ]}
         showsVerticalScrollIndicator={false}
         scrollEnabled
@@ -64,76 +85,58 @@ export default function PhotoGalleryView({
           );
         }}
       >
-        <View style={styles.libraryHeadingRow}>
-          <View style={styles.libraryHeadingCopy}>
-            <Text style={styles.libraryEyebrow}>
-              {libraryMode === "bin" ? "DELETED PHOTOS" : "PROJECT LIBRARY"}
-            </Text>
-            <Text style={styles.libraryTitle}>
-              {libraryMode === "bin" ? "Bin" : `${activePhotos.length} Photos`}
-            </Text>
-          </View>
-          {libraryMode === "bin" ? (
-            <Pressable
-              style={styles.libraryBackButton}
-              onPress={() => {
-                exitSelectionMode();
-                setLibraryMode("library");
-              }}
-            >
-              <Ionicons name="chevron-back" size={18} color={GOLD} />
-              <Text style={styles.libraryBackButtonText}>Library</Text>
-            </Pressable>
-          ) : galleryPhotos.length ? (
-            <Pressable
-              style={styles.selectButton}
-              onPress={() =>
-                selectionMode ? exitSelectionMode() : setSelectionMode(true)
-              }
-            >
-              <Text style={styles.selectButtonText}>
-                {selectionMode ? "Cancel" : "Select"}
+        <View style={styles.libraryHeader}>
+          <View style={styles.libraryHeadingRow}>
+            {libraryMode === "bin" ? (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.libraryBackButton,
+                  pressed && styles.galleryHeaderButtonPressed,
+                ]}
+                onPress={() => {
+                  exitSelectionMode();
+                  setLibraryMode("library");
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Back to photo library"
+              >
+                <Ionicons name="chevron-back" size={18} color={GOLD} />
+                <Text style={styles.libraryBackButtonText}>Library</Text>
+              </Pressable>
+            ) : null}
+            <View style={styles.libraryHeadingCopy}>
+              <Text style={styles.libraryEyebrow}>
+                {libraryMode === "bin" ? "DELETED PHOTOS" : "PROJECT LIBRARY"}
               </Text>
-            </Pressable>
-          ) : null}
-        </View>
-
-        {libraryMode === "bin" && galleryPhotos.length ? (
-          <View style={styles.libraryActionRow}>
-            <View style={styles.libraryActionLeft}>
-              {selectionMode ? (
-                <Text style={styles.librarySelectCount}>
-                  {selectedPhotoIds.length} Selected
-                </Text>
-              ) : binnedPhotos.length ? (
-                <Pressable
-                  style={styles.emptyBinButton}
-                  onPress={requestEmptyBin}
-                >
-                  <Text style={styles.emptyBinButtonText}>Empty Bin</Text>
-                </Pressable>
-              ) : null}
+              <Text style={styles.libraryTitle}>
+                {libraryMode === "bin"
+                  ? "Bin"
+                  : `${activePhotos.length} Photos`}
+              </Text>
             </View>
-            <Pressable
-              style={styles.selectButton}
-              onPress={() =>
-                selectionMode ? exitSelectionMode() : setSelectionMode(true)
-              }
-            >
-              <Text style={styles.selectButtonText}>
-                {selectionMode ? "Cancel" : "Select"}
-              </Text>
-            </Pressable>
           </View>
-        ) : null}
 
-        {libraryMode === "library" && selectionMode ? (
-          <View style={styles.librarySelectionCountRow}>
-            <Text style={styles.librarySelectCount}>
-              {selectedPhotoIds.length} Selected
-            </Text>
-          </View>
-        ) : null}
+          {libraryMode === "bin" && galleryPhotos.length && !selectionMode ? (
+            <View style={styles.libraryActionRow}>
+              <View style={styles.libraryActionLeft}>
+                {binnedPhotos.length ? (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.emptyBinButton,
+                      pressed && styles.galleryHeaderButtonPressed,
+                    ]}
+                    onPress={requestEmptyBin}
+                    accessibilityRole="button"
+                    accessibilityLabel="Empty photo bin"
+                  >
+                    <Text style={styles.emptyBinButtonText}>Empty Bin</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+
+        </View>
 
         {libraryMode === "library" && availableGalleryTypes.length > 1 ? (
           <ScrollView
@@ -144,9 +147,11 @@ export default function PhotoGalleryView({
             {availableGalleryTypes.map((type) => (
               <Pressable
                 key={type}
+                disabled={selectionMode}
                 style={[
                   styles.typeFilterChip,
                   galleryType === type && styles.typeFilterChipActive,
+                  selectionMode && styles.typeFilterChipDisabled,
                 ]}
                 onPress={() => setGalleryType(type)}
               >
@@ -238,7 +243,7 @@ export default function PhotoGalleryView({
           </View>
         ) : null}
 
-        {libraryMode === "library" ? (
+        {libraryMode === "library" && !selectionMode ? (
           <Pressable
             style={styles.binFolderCard}
             onPress={() => {
@@ -262,52 +267,135 @@ export default function PhotoGalleryView({
         ) : null}
       </ScrollView>
 
+      {galleryPhotos.length ? (
+        <Pressable
+          style={({ pressed }) => [
+            styles.floatingSelectButton,
+            selectionMode && styles.floatingSelectButtonActive,
+            pressed && styles.galleryHeaderButtonPressed,
+          ]}
+          onPress={toggleSelectionMode}
+          accessibilityRole="button"
+          accessibilityLabel={
+            selectionMode ? "Cancel photo selection" : "Select photos"
+          }
+        >
+          <Text style={[
+            styles.selectButtonText,
+            selectionMode && styles.floatingSelectButtonTextActive,
+          ]}>
+            {selectionButtonLabel}
+          </Text>
+          {selectionMode ? (
+            <View style={styles.floatingSelectCount}>
+              <Text style={styles.floatingSelectCountText}>
+                {selectedPhotoIds.length > 99 ? "99+" : selectedPhotoIds.length}
+              </Text>
+            </View>
+          ) : null}
+        </Pressable>
+      ) : null}
+
       {selectionMode ? (
-        <View style={[styles.selectionActionBar, { bottom: bottomActionOffset }]}>
-          {libraryMode === "library" ? (
+        <View
+          style={[
+            styles.selectionActionBar,
+            { bottom: selectionDockBottom },
+          ]}
+        >
+          <View style={styles.selectionActionContent}>
+            {libraryMode === "library" ? (
+              <>
+                <Pressable
+                  disabled={!selectedGalleryPhotos.length || uploadBusy}
+                  style={[
+                    styles.selectionAction,
+                    (!selectedGalleryPhotos.length || uploadBusy) &&
+                      styles.selectionActionDisabled,
+                  ]}
+                  onPress={exportSelectedPhotos}
+                >
+                  <Ionicons name="share-outline" size={23} color={NAVY} />
+                  <Text style={styles.selectionActionText}>Export</Text>
+                </Pressable>
+                <Pressable
+                  disabled={!selectedGalleryPhotos.length || uploadBusy}
+                  style={[
+                    styles.selectionAction,
+                    (!selectedGalleryPhotos.length ||
+                      (uploadBusy && !selectedUploadBusy)) &&
+                      styles.selectionActionDisabled,
+                  ]}
+                  onPress={uploadSelectedPhotosToSharePoint}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    selectedUploadBusy
+                      ? `Uploading selected photos, ${selectedUploadPercent} percent`
+                      : "Upload selected photos to SharePoint"
+                  }
+                  accessibilityState={{
+                    busy: selectedUploadBusy,
+                    disabled: !selectedGalleryPhotos.length || uploadBusy,
+                  }}
+                >
+                  {selectedUploadBusy ? (
+                    <ActivityIndicator size="small" color={NAVY} />
+                  ) : (
+                    <Ionicons name="cloud-upload-outline" size={23} color={NAVY} />
+                  )}
+                  <Text style={styles.selectionActionText}>
+                    {selectedUploadBusy
+                      ? `${selectedUploadPercent}%`
+                      : "SharePoint"}
+                  </Text>
+                  {selectedUploadBusy ? (
+                    <View style={styles.selectionProgressTrack}>
+                      <View
+                        style={[
+                          styles.selectionProgressFill,
+                          { width: `${Math.max(4, selectedUploadPercent)}%` },
+                        ]}
+                      />
+                    </View>
+                  ) : null}
+                </Pressable>
+              </>
+            ) : (
+              <Pressable
+                disabled={!selectedGalleryPhotos.length || uploadBusy}
+                style={[
+                  styles.selectionAction,
+                  (!selectedGalleryPhotos.length || uploadBusy) &&
+                    styles.selectionActionDisabled,
+                ]}
+                onPress={restoreSelectedFromBin}
+              >
+                <Ionicons name="arrow-undo-outline" size={23} color={NAVY} />
+                <Text style={styles.selectionActionText}>Restore</Text>
+              </Pressable>
+            )}
+
             <Pressable
-              disabled={!selectedGalleryPhotos.length}
+              disabled={!selectedGalleryPhotos.length || uploadBusy}
               style={[
                 styles.selectionAction,
-                !selectedGalleryPhotos.length && styles.selectionActionDisabled,
+                (!selectedGalleryPhotos.length || uploadBusy) &&
+                  styles.selectionActionDisabled,
               ]}
-              onPress={exportSelectedPhotos}
+              onPress={
+                libraryMode === "bin"
+                  ? requestDeleteSelectedFromBin
+                  : moveSelectedToBin
+              }
             >
-              <Ionicons name="share-outline" size={23} color={NAVY} />
-              <Text style={styles.selectionActionText}>Export</Text>
+              <Ionicons name="trash-outline" size={23} color="#B43C3C" />
+              <Text style={[styles.selectionActionText, styles.selectionDanger]}>
+                {libraryMode === "bin" ? "Delete" : "Bin"}
+              </Text>
             </Pressable>
-          ) : (
-            <Pressable
-              disabled={!selectedGalleryPhotos.length}
-              style={[
-                styles.selectionAction,
-                !selectedGalleryPhotos.length && styles.selectionActionDisabled,
-              ]}
-              onPress={restoreSelectedFromBin}
-            >
-              <Ionicons name="arrow-undo-outline" size={23} color={NAVY} />
-              <Text style={styles.selectionActionText}>Restore</Text>
-            </Pressable>
-          )}
-          <Pressable
-            disabled={!selectedGalleryPhotos.length}
-            style={[
-              styles.selectionAction,
-              !selectedGalleryPhotos.length && styles.selectionActionDisabled,
-            ]}
-            onPress={
-              libraryMode === "bin"
-                ? requestDeleteSelectedFromBin
-                : moveSelectedToBin
-            }
-          >
-            <Ionicons name="trash-outline" size={23} color="#B43C3C" />
-            <Text style={[styles.selectionActionText, styles.selectionDanger]}>
-              {libraryMode === "bin" ? "Delete" : "Bin"}
-            </Text>
-          </Pressable>
+          </View>
         </View>
       ) : null}
-    </>
+    </View>
   );
 }

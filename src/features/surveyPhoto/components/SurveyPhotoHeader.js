@@ -9,6 +9,7 @@ export default function SurveyPhotoHeader({
   activeJob,
   photoCount,
   accuracy,
+  locationStale = false,
   locationPermission,
   onBack,
   backLabel,
@@ -17,6 +18,8 @@ export default function SurveyPhotoHeader({
     locationPermission?.granted && Number.isFinite(Number(accuracy));
   const gpsStatus = !locationPermission?.granted
     ? "GPS required"
+    : locationStale
+      ? "GPS stale"
     : gpsReady
       ? `GPS ±${Number(accuracy).toFixed(1)} m`
       : "GPS waiting";
@@ -54,7 +57,7 @@ export default function SurveyPhotoHeader({
             styles.statusDot,
             {
               backgroundColor:
-                gpsReady && Number(accuracy) <= 8 ? "#54D98C" : GOLD,
+                gpsReady && !locationStale && Number(accuracy) <= 8 ? "#54D98C" : GOLD,
             },
           ]}
         />

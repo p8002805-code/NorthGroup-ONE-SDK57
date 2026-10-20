@@ -14,7 +14,8 @@ import * as MediaLibrary from 'expo-media-library';
 
 import styles from '../styles/styles';
 import { embedSE14PhotoMetadata } from '../utils/se14PhotoStorage';
-import { accountDirectoryName } from '../features/account/accountWorkspace';
+import { accountDirectoryName } from '../services/account/accountIdentity';
+import { reportDevelopmentError } from '../services/security/securityLogger';
 
 const safePart = (value, fallback) =>
   String(value || fallback)
@@ -158,7 +159,7 @@ export default function SE14PhotoField({
             );
           }
         } catch (libraryError) {
-          console.log(
+          reportDevelopmentError(
             'Could not save SE-14 photo to the GNSS Photos album:',
             libraryError
           );
@@ -196,13 +197,18 @@ export default function SE14PhotoField({
     );
   };
 
-  const stampText = value?.stampText || (value
-    ? `${projectNumber || 'No Job Number'}  •  ${
-        markId || 'No Mark ID'
-      }  •  Session ${sessionNumber || '-'}${
-        tagText ? `  •  ${tagText}` : ''
-      }  •  ${new Date(value.capturedAt).toLocaleString()}`
-    : '');
+  const stampText = value
+    ? [
+        projectNumber || 'No Job Number',
+        markId || 'No Mark ID',
+        `Session ${sessionNumber || '-'}`,
+        String(photoType || 'Photo').replace(/_/g, ' '),
+        tagText || null,
+        new Date(value.capturedAt).toLocaleString(),
+      ]
+        .filter(Boolean)
+        .join('  •  ')
+    : '';
 
   return (
     <View style={styles.photoFieldCard}>

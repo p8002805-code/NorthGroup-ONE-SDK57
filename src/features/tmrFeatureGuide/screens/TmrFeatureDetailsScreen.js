@@ -180,6 +180,9 @@ export default function TmrFeatureDetailsScreen({ feature, setScreen }) {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
       >
         <AppCard style={styles.imageCard}>
           <View style={styles.imageSectionHeader}>

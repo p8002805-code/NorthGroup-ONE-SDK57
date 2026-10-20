@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import styles from '../styles/styles';
 
@@ -20,6 +21,7 @@ export default function CollapseSection({
 }) {
   const isStart = tone === 'start';
   const isEnd = tone === 'end';
+  const isDark = tone === 'dark';
   const isCurrent = workflow && Boolean(current);
   const isComplete = workflow && Boolean(complete);
   const workflowStatus = isCurrent
@@ -34,6 +36,7 @@ export default function CollapseSection({
         styles.collapseTitle,
         !workflow && isStart && styles.collapseTitleStart,
         !workflow && isEnd && styles.collapseTitleEnd,
+        !workflow && isDark && styles.collapseTitleDark,
         !workflow && compact && styles.collapseTitleCompact,
         workflow && styles.collapseTitleWorkflow,
         isCurrent && styles.collapseTitleWorkflowCurrent,
@@ -51,6 +54,7 @@ export default function CollapseSection({
           styles.collapseHeader,
           !workflow && isStart && styles.collapseHeaderStart,
           !workflow && isEnd && styles.collapseHeaderEnd,
+          !workflow && isDark && styles.collapseHeaderDark,
           !workflow && compact && styles.collapseHeaderCompact,
           workflow && styles.collapseHeaderWorkflow,
           isCurrent && styles.collapseHeaderWorkflowCurrent,
@@ -71,6 +75,8 @@ export default function CollapseSection({
             ]}
           />
         ) : null}
+
+        {!workflow && isDark ? <View style={styles.collapseDarkAccent} /> : null}
 
         <View style={styles.collapseCopy}>
           {workflow ? (
@@ -102,6 +108,7 @@ export default function CollapseSection({
                 styles.collapseSubtitle,
                 !workflow && isStart && styles.collapseSubtitleStart,
                 !workflow && isEnd && styles.collapseSubtitleEnd,
+                !workflow && isDark && styles.collapseSubtitleDark,
                 !workflow && compact && styles.collapseSubtitleCompact,
                 workflow && styles.collapseSubtitleWorkflow,
                 isCurrent && styles.collapseSubtitleWorkflowCurrent,
@@ -113,21 +120,35 @@ export default function CollapseSection({
           ) : null}
         </View>
 
-        <Text
-          style={[
-            styles.collapseArrow,
-            !workflow && isStart && styles.collapseArrowStart,
-            !workflow && isEnd && styles.collapseArrowEnd,
-            workflow && styles.collapseArrowWorkflow,
-            isCurrent && styles.collapseArrowWorkflowCurrent,
-          ]}
-        >
-          {open ? '⌃' : '⌄'}
-        </Text>
+        {!workflow && isDark ? (
+          <Ionicons
+            name={open ? 'chevron-up' : 'chevron-down'}
+            size={22}
+            color="#D6A84F"
+            style={styles.collapseChevronDark}
+          />
+        ) : (
+          <Text
+            style={[
+              styles.collapseArrow,
+              !workflow && isStart && styles.collapseArrowStart,
+              !workflow && isEnd && styles.collapseArrowEnd,
+              workflow && styles.collapseArrowWorkflow,
+              isCurrent && styles.collapseArrowWorkflowCurrent,
+            ]}
+          >
+            {open ? '⌃' : '⌄'}
+          </Text>
+        )}
       </TouchableOpacity>
 
       {open ? (
-        <View style={styles.collapseContent}>
+        <View
+          style={[
+            styles.collapseContent,
+            !workflow && isDark && styles.collapseContentDark,
+          ]}
+        >
           {children}
 
           <TouchableOpacity
@@ -135,6 +156,7 @@ export default function CollapseSection({
               styles.collapseCloseButton,
               !workflow && isStart && styles.collapseCloseButtonStart,
               !workflow && isEnd && styles.collapseCloseButtonEnd,
+              !workflow && isDark && styles.collapseCloseButtonDark,
               workflow && styles.collapseCloseButtonWorkflow,
             ]}
             onPress={onToggle}
@@ -145,22 +167,27 @@ export default function CollapseSection({
                 styles.collapseCloseButtonText,
                 !workflow && isStart && styles.collapseCloseButtonTextStart,
                 !workflow && isEnd && styles.collapseCloseButtonTextEnd,
+                !workflow && isDark && styles.collapseCloseButtonTextDark,
                 workflow && styles.collapseCloseButtonTextWorkflow,
               ]}
             >
               {workflow ? `Collapse ${title}` : `Close ${title}`}
             </Text>
 
-            <Text
-              style={[
-                styles.collapseCloseArrow,
-                !workflow && isStart && styles.collapseCloseArrowStart,
-                !workflow && isEnd && styles.collapseCloseArrowEnd,
-                workflow && styles.collapseCloseArrowWorkflow,
-              ]}
-            >
-              ⌃
-            </Text>
+            {!workflow && isDark ? (
+              <Ionicons name="chevron-up" size={20} color="#D6A84F" />
+            ) : (
+              <Text
+                style={[
+                  styles.collapseCloseArrow,
+                  !workflow && isStart && styles.collapseCloseArrowStart,
+                  !workflow && isEnd && styles.collapseCloseArrowEnd,
+                  workflow && styles.collapseCloseArrowWorkflow,
+                ]}
+              >
+                ⌃
+              </Text>
+            )}
           </TouchableOpacity>
         </View>
       ) : null}

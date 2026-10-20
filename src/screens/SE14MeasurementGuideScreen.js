@@ -53,6 +53,9 @@ export default function SE14MeasurementGuideScreen({
           styles.scrollContent
         }
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
       >
         <View style={styles.introCard}>
           <Text style={styles.introTitle}>

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 
-import { accountStorageKey } from '../account/accountWorkspace';
+import { accountStorageKey } from '../../services/account/accountIdentity';
 
 const OUTBOX_PREFIX = 'northgroup_one_job_chat_outbox_v1';
 

@@ -145,6 +145,9 @@ export default function S500RiskGuideScreen({ setScreen, backLabel = 'S-500 Form
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.guideScrollContent}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
       >
         <Text style={styles.guideSectionTitle}>Hierarchy of Control</Text>
 

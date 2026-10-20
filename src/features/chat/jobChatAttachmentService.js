@@ -1,8 +1,18 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
+import {
+  GRAPH_ROOT,
+  graphRequest as sharedGraphRequest,
+} from '../../services/sync/graphClient';
+import {
+  createAuthenticatedGraphUploadTask,
+  downloadAuthenticatedGraphFile,
+  downloadMicrosoftGraphFile,
+} from '../../services/sync/graphFileTransfer';
+import { trackSyncOperation } from '../../services/sync/syncState';
+import { secureRandomId } from '../../services/security/secureRandom';
 
-const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
 const ATTACHMENT_CACHE_DIRECTORY = `${FileSystem.cacheDirectory}northgroup-job-chat-attachments/`;
 const OUTBOX_DIRECTORY = `${FileSystem.documentDirectory}northgroup-job-chat-outbox/`;
 const CHUNK_DIRECTORY = `${FileSystem.cacheDirectory}northgroup-job-chat-upload-chunks/`;
@@ -28,14 +38,7 @@ const safeToken = (value, fallback = 'item') => clean(value)
   .replace(/^[_\.]+|[_\.]+$/g, '')
   .slice(0, 100) || fallback;
 
-const uuid = () => {
-  const pattern = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx';
-  return pattern.replace(/[xy]/g, (character) => {
-    const random = Math.floor(Math.random() * 16);
-    const value = character === 'x' ? random : ((random & 0x3) | 0x8);
-    return value.toString(16);
-  });
-};
+const uuid = () => secureRandomId('attachment');
 
 const fileExtension = (name = '') => {
   const match = String(name || '').match(/\.([A-Za-z0-9]{1,12})$/);
@@ -345,26 +348,16 @@ const parseBody = (text) => {
   }
 };
 
-const graphRequest = async (url, accessToken, options = {}) => {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  const text = await response.text();
-  const body = parseBody(text);
-  if (!response.ok) {
-    const error = new Error(graphErrorMessage(response.status, body));
-    error.status = response.status;
-    error.body = body;
-    throw error;
-  }
-  return body;
-};
+const graphRequest = (url, accessToken, options = {}) => sharedGraphRequest(
+  url,
+  accessToken,
+  options,
+  {
+    feature: 'chatAttachments',
+    operation: `${String(options.method || 'GET').toUpperCase()} Job Chat attachment`,
+    errorMessage: graphErrorMessage,
+  },
+);
 
 const getOrCreateFolder = async ({ accessToken, parentId, name }) => {
   const folderName = safeOneDriveName(name, 'Folder');
@@ -506,24 +499,24 @@ const directUpload = async ({
   assertNotCancelled(uploadId);
   const fileName = storageNameFor(attachment);
   const url = `${GRAPH_ROOT}/me/drive/items/${encodePath(folderId)}:/${encodeURIComponent(fileName)}:/content?@microsoft.graph.conflictBehavior=rename`;
-  const task = FileSystem.createUploadTask(
-    url,
-    attachment.localUri,
-    {
+  const task = createAuthenticatedGraphUploadTask({
+    accessToken,
+    urlOrPath: url,
+    fileUri: attachment.localUri,
+    options: {
       httpMethod: 'PUT',
       uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
       sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${accessToken}`,
         'Content-Type': mimeTypeForJobChatFile(attachment.name, attachment.mimeType),
       },
     },
-    ({ totalBytesSent, totalBytesExpectedToSend }) => {
+    onProgress: ({ totalBytesSent, totalBytesExpectedToSend }) => {
       const expected = Number(totalBytesExpectedToSend || attachment.size || 1);
       onProgress?.(Math.min(1, Number(totalBytesSent || 0) / Math.max(1, expected)));
     },
-  );
+  });
   registerTask(uploadId, task);
   try {
     const result = await task.uploadAsync();
@@ -688,7 +681,7 @@ const createOrganisationLink = async ({ accessToken, driveItemId }) => {
   return webUrl;
 };
 
-export const uploadJobChatAttachments = async ({
+const uploadJobChatAttachmentsContent = async ({
   accessToken,
   accountId,
   job,
@@ -770,6 +763,15 @@ export const uploadJobChatAttachments = async ({
   onProgress?.({ overall: 1, status: 'uploaded' });
   return uploaded;
 };
+
+export const uploadJobChatAttachments = async (parameters) => trackSyncOperation(
+  {
+    feature: 'chatAttachments',
+    operation: 'Upload Job Chat attachments',
+    jobNumber: parameters?.job?.number || '',
+  },
+  () => uploadJobChatAttachmentsContent(parameters),
+);
 
 export const uploadJobChatAttachment = async ({
   accessToken,
@@ -871,16 +873,16 @@ export const resolveJobChatAttachment = async ({
     : '';
 
   if ((attachment.source === 'hosted' || attachment.remoteType === 'hosted') && hostedContentUrl) {
-    const result = await FileSystem.downloadAsync(
-      hostedContentUrl,
+    const result = await downloadAuthenticatedGraphFile({
+      accessToken,
+      urlOrPath: hostedContentUrl,
       destination,
-      {
+      options: {
         headers: {
-          Authorization: `Bearer ${accessToken}`,
           Accept: attachment.mimeType || 'image/*',
         },
       },
-    );
+    });
     if (result.status < 200 || result.status >= 300) {
       await FileSystem.deleteAsync(destination, { idempotent: true }).catch(() => {});
       throw new Error('The Teams photo could not be downloaded.');
@@ -897,20 +899,28 @@ export const resolveJobChatAttachment = async ({
   if (!fileUrl) throw new Error('This Teams attachment does not include a file link.');
 
   const token = sharingToken(fileUrl);
-const item = await graphRequest(
-  `${GRAPH_ROOT}/shares/${encodeURIComponent(token)}/driveItem`,
-  accessToken,
-  {
-    headers: {
-      'Content-Type': 'application/json',
-      Prefer: 'redeemSharingLink',
+  const item = await graphRequest(
+    `${GRAPH_ROOT}/shares/${encodeURIComponent(token)}/driveItem`,
+    accessToken,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        Prefer: 'redeemSharingLink',
+      },
     },
-  },
-);
+  );
   const downloadUrl = item?.['@microsoft.graph.downloadUrl'];
-  if (!downloadUrl) throw new Error('Microsoft did not provide a download link for this file.');
-
-  const result = await FileSystem.downloadAsync(downloadUrl, destination);
+  const result = await downloadMicrosoftGraphFile({
+    accessToken,
+    graphUrlOrPath: `${GRAPH_ROOT}/shares/${encodeURIComponent(token)}/driveItem/content`,
+    preauthenticatedUrl: downloadUrl,
+    destination,
+    options: {
+      headers: {
+        Accept: item?.file?.mimeType || attachment.mimeType || 'application/octet-stream',
+      },
+    },
+  });
   if (result.status < 200 || result.status >= 300) {
     await FileSystem.deleteAsync(destination, { idempotent: true }).catch(() => {});
     throw new Error('The Teams file could not be downloaded.');

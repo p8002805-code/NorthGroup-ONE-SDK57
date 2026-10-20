@@ -17,7 +17,7 @@ const GOLD = '#D6A84F';
 const WHITE = '#FFFFFF';
 const MUTED = '#AAB8C3';
 
-const actions = [
+const DEFAULT_ACTIONS = [
   {
     key: 'camera',
     label: 'Take Photo',
@@ -44,6 +44,10 @@ export default function JobChatAttachmentPicker({
   onTakePhoto,
   onChoosePhotos,
   onChooseFile,
+  eyebrow = 'JOB CHAT',
+  title = 'Add an attachment',
+  footer = 'FILES ARE SHARED SECURELY THROUGH MICROSOFT 365',
+  actions = DEFAULT_ACTIONS,
 }) {
   const insets = useSafeAreaInsets();
   const pendingActionRef = useRef('');
@@ -107,8 +111,8 @@ export default function JobChatAttachmentPicker({
 
           <View style={styles.headingRow}>
             <View>
-              <Text style={styles.eyebrow}>JOB CHAT</Text>
-              <Text style={styles.title}>Add an attachment</Text>
+              <Text style={styles.eyebrow}>{eyebrow}</Text>
+              <Text style={styles.title}>{title}</Text>
             </View>
             <Pressable
               onPress={onClose}
@@ -142,7 +146,7 @@ export default function JobChatAttachmentPicker({
             ))}
           </View>
 
-          <Text style={styles.footer}>FILES ARE SHARED SECURELY THROUGH MICROSOFT 365</Text>
+          <Text style={styles.footer}>{footer}</Text>
         </ImageBackground>
       </View>
     </Modal>

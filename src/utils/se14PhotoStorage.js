@@ -2,6 +2,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import JSZip from 'jszip';
 import piexif from 'piexifjs';
+import { reportDevelopmentError } from '../services/security/securityLogger';
+import { compactDateForFilename } from './format';
+import { resolveUserInitials } from './userInitials';
 
 export const SE14_PHOTO_FIELDS = [
   { key: 'photoStartMarkId', label: 'Start · Mark ID', stage: 'Start', order: 1 },
@@ -42,7 +45,7 @@ export const deleteSE14FormPhotos = async (
       try {
         await FileSystem.deleteAsync(uri, { idempotent: true });
       } catch (error) {
-        console.log('Could not delete cleared SE-14 photo:', uri, error);
+        reportDevelopmentError('Could not delete cleared SE-14 photo', error);
       }
     })
   );
@@ -135,20 +138,18 @@ export const collectSE14Photos = (records = []) => {
       );
       const markId = String(storedPhoto.markId || form.markId || '');
       const sessionNumber = String(
-        storedPhoto.sessionNumber || form.sessionNumber || ''
+        form.sessionNumber || storedPhoto.sessionNumber || ''
       );
-      const stampText =
-        storedPhoto.stampText ||
-        [
-          projectNumber || 'No Job Number',
-          markId || 'No Mark ID',
-          `Session ${sessionNumber || '-'}`,
-          definition.label,
-          storedPhoto.tagText || null,
-          new Date(capturedAt).toLocaleString('en-AU'),
-        ]
-          .filter(Boolean)
-          .join('  •  ');
+      const stampText = [
+        projectNumber || 'No Job Number',
+        markId || 'No Mark ID',
+        `Session ${sessionNumber || '-'}`,
+        definition.label,
+        storedPhoto.tagText || null,
+        new Date(capturedAt).toLocaleString('en-AU'),
+      ]
+        .filter(Boolean)
+        .join('  •  ');
 
       const photo = {
         ...storedPhoto,
@@ -166,7 +167,7 @@ export const collectSE14Photos = (records = []) => {
         capturedAt,
         dateFolder:
           storedPhoto.dateFolder || dateKeyFromValue(capturedAt),
-        filename: storedPhoto.filename || fallbackFilename({
+        filename: fallbackFilename({
           ...storedPhoto,
           projectNumber,
           markId,
@@ -299,7 +300,7 @@ export const embedSE14PhotoMetadata = async (photo) => {
 
     return true;
   } catch (error) {
-    console.log('Could not embed SE-14 photo metadata:', error);
+    reportDevelopmentError('Could not embed SE-14 photo metadata', error);
     return false;
   }
 };
@@ -308,6 +309,8 @@ export const exportSE14PhotoZip = async ({
   photos = [],
   jobNumber,
   scopeLabel = 'All',
+  initials = '',
+  exportedAt = new Date(),
 }) => {
   if (!photos.length) {
     throw new Error('There are no GNSS photos in this selection.');
@@ -319,10 +322,14 @@ export const exportSE14PhotoZip = async ({
   }
 
   const zip = new JSZip();
+  const exportSuffix = `${compactDateForFilename(exportedAt)}${cleanPart(
+    resolveUserInitials({ initials }),
+    'NG'
+  )}`;
   const rootName = `${cleanPart(jobNumber, 'Job')}_GNSS_Photos_${cleanPart(
     scopeLabel,
     'All'
-  )}`;
+  )}_${exportSuffix}`;
   const usedNames = new Map();
   let exportedPhotoCount = 0;
 

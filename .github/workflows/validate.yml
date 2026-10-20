@@ -1,0 +1,45 @@
+name: Validate NorthGroup ONE
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - name: Check out source without retained credentials
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install the locked dependency tree
+        run: npm ci --ignore-scripts
+
+      - name: Reject critical dependency advisories
+        run: npm audit --omit=dev --audit-level=critical
+
+      - name: Run structural and regression checks
+        run: npm run validate
+
+      - name: Run Expo diagnostics
+        run: npx expo-doctor
+
+      - name: Build the iOS JavaScript bundle
+        run: npx expo export --platform ios --output-dir dist-ci

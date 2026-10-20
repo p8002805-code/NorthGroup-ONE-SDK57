@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
+  ActivityIndicator,
   FlatList,
   Image,
   Modal,
@@ -13,11 +14,15 @@ import {
   View,
 } from "react-native";
 
+import { SURVEY_IMAGE_TYPES } from "../constants/imageTypes";
 import {
+  GOLD,
+  NAVY,
   gpsColour,
   resolvePhotoUri,
 } from "../constants/photoTheme";
 import styles from "../styles/surveyPhotoStyles";
+import { Input } from "./PhotoUi";
 
 const isDownwardSingleFingerGesture = (
   gesture,
@@ -49,11 +54,19 @@ export default function PhotoViewerModal({
   onRestore,
   onSaveCopy,
   onShare,
+  onUploadSharePoint,
+  onUpdateImageType,
   previewPhoto,
   previewPhotos,
+  sharePointUpload,
 }) {
   const { width, height } = useWindowDimensions();
   const [zoomedPhotoId, setZoomedPhotoId] = useState(null);
+  const [typeEditorOpen, setTypeEditorOpen] = useState(false);
+  const [typeDraft, setTypeDraft] = useState("");
+  const [customTypeDraft, setCustomTypeDraft] = useState("");
+  const [typeSaving, setTypeSaving] = useState(false);
+  const [viewerChromeVisible, setViewerChromeVisible] = useState(true);
   const closingRef = useRef(false);
   const dismissY = useRef(new Animated.Value(0)).current;
   const listRef = useRef(null);
@@ -74,6 +87,7 @@ export default function PhotoViewerModal({
     if (!previewPhoto) return;
     closingRef.current = false;
     dismissY.setValue(0);
+    setViewerChromeVisible(true);
     const nextIndex = Math.max(
       0,
       previewPhotos.findIndex((item) => item.id === previewPhoto.id),
@@ -91,10 +105,37 @@ export default function PhotoViewerModal({
     previewPhoto?.horizontalAccuracy == null
       ? null
       : Number(previewPhoto.horizontalAccuracy);
+  const uploadBusy = Boolean(sharePointUpload?.active);
+  const thisPhotoUploadBusy =
+    uploadBusy && sharePointUpload?.scope === `photo:${previewPhoto?.id}`;
+  const uploadPercent = Math.round(
+    Math.max(0, Math.min(1, Number(sharePointUpload?.progress) || 0)) * 100,
+  );
+
+  const openTypeEditor = () => {
+    const currentType = String(previewPhoto?.imageType || "").trim();
+    const isStandardType = SURVEY_IMAGE_TYPES.includes(currentType);
+    setTypeDraft(isStandardType ? currentType : "Custom");
+    setCustomTypeDraft(isStandardType ? "" : currentType);
+    setTypeEditorOpen(true);
+  };
+
+  const saveTypeChange = async () => {
+    const nextType = typeDraft === "Custom" ? customTypeDraft.trim() : typeDraft;
+    if (!nextType || typeSaving || !previewPhoto) return;
+    try {
+      setTypeSaving(true);
+      const updatedPhoto = await onUpdateImageType(previewPhoto, nextType);
+      if (updatedPhoto) setTypeEditorOpen(false);
+    } finally {
+      setTypeSaving(false);
+    }
+  };
 
   const close = () => {
     closingRef.current = true;
     setZoomedPhotoId(null);
+    setViewerChromeVisible(true);
     onClose();
   };
 
@@ -199,6 +240,7 @@ export default function PhotoViewerModal({
     if (!nextPhoto) return;
     indexRef.current = nextIndex;
     setZoomedPhotoId(null);
+    setViewerChromeVisible(true);
     if (nextPhoto.id !== previewPhoto?.id) onPhotoChange(nextPhoto);
   };
 
@@ -264,6 +306,7 @@ export default function PhotoViewerModal({
             scrollEventThrottle={16}
             onScrollBeginDrag={() => {
               if (closingRef.current) return;
+              setViewerChromeVisible(true);
               dismissY.stopAnimation();
               dismissY.setValue(0);
             }}
@@ -274,6 +317,9 @@ export default function PhotoViewerModal({
                 isActive={previewPhoto?.id === item.id}
                 onZoomChange={(zoomed) =>
                   setZoomedPhotoId(zoomed ? item.id : null)
+                }
+                onToggleChrome={() =>
+                  setViewerChromeVisible((visible) => !visible)
                 }
               />
             )}
@@ -288,140 +334,300 @@ export default function PhotoViewerModal({
             }}
           />
 
-          <View style={[styles.photoViewerTopBubble, { top: insets.top + 8 }]}>
-            <View style={styles.photoViewerTopCopy}>
-              <Text style={styles.photoViewerCounter}>
-                {previewIndex + 1} OF {previewPhotos.length}
-              </Text>
-              <Text style={styles.photoViewerDate}>
-                {previewPhoto?.captureDateTime
-                  ? new Date(previewPhoto.captureDateTime).toLocaleString(
-                      "en-AU",
-                      {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                        hour: "numeric",
-                        minute: "2-digit",
-                      },
-                    )
-                  : "Project photo"}
-              </Text>
+          {viewerChromeVisible ? (
+            <View style={[styles.photoViewerTopBubble, { top: insets.top + 8 }]}>
+              <View style={styles.photoViewerTopCopy}>
+                <Text style={styles.photoViewerCounter}>
+                  {previewIndex + 1} OF {previewPhotos.length}
+                </Text>
+                <Text style={styles.photoViewerDate}>
+                  {previewPhoto?.captureDateTime
+                    ? new Date(previewPhoto.captureDateTime).toLocaleString(
+                        "en-AU",
+                        {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        },
+                      )
+                    : "Project photo"}
+                </Text>
+              </View>
+              <Pressable
+                style={styles.photoViewerClose}
+                onPress={close}
+                accessibilityRole="button"
+                accessibilityLabel="Close photo preview"
+              >
+                <Text style={styles.photoViewerCloseText}>×</Text>
+              </Pressable>
             </View>
-            <Pressable
-              style={styles.photoViewerClose}
-              onPress={close}
-              accessibilityRole="button"
-              accessibilityLabel="Close photo preview"
-            >
-              <Text style={styles.photoViewerCloseText}>×</Text>
-            </Pressable>
-          </View>
+          ) : null}
 
-          <View
-            style={[
-              styles.photoViewerBottom,
-              { paddingBottom: Math.max(insets.bottom, 10) },
-            ]}
-          >
-            <View style={styles.photoInfoBubble}>
-              <View style={styles.photoInfoHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.photoInfoType}>
-                    {previewPhoto?.imageType || "Survey Photo"}
-                  </Text>
-                  <Text style={styles.photoInfoFile} numberOfLines={1}>
-                    {previewPhoto?.fileName || ""}
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.photoInfoGpsBadge,
-                    { borderColor: gpsColour(previewAccuracy) },
-                  ]}
-                >
-                  <Text
+          {viewerChromeVisible ? (
+            <View
+              style={[
+                styles.photoViewerBottom,
+                { paddingBottom: Math.max(insets.bottom, 10) },
+              ]}
+            >
+              <View style={styles.photoInfoBubble}>
+                <View style={styles.photoInfoHeader}>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.photoInfoTitleRow}>
+                      <Text numberOfLines={1} style={styles.photoInfoType}>
+                        {previewPhoto?.imageType || "Survey Photo"}
+                      </Text>
+                      {!previewPhoto?.deletedAt ? (
+                        <Pressable
+                          style={styles.photoInfoEditTypeButton}
+                          onPress={openTypeEditor}
+                          accessibilityRole="button"
+                          accessibilityLabel="Change photo image type"
+                        >
+                          <Text style={styles.photoInfoEditTypeText}>EDIT TYPE</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    <Text style={styles.photoInfoFile} numberOfLines={1}>
+                      {previewPhoto?.fileName || ""}
+                    </Text>
+                  </View>
+                  <View
                     style={[
-                      styles.photoInfoGpsText,
-                      { color: gpsColour(previewAccuracy) },
+                      styles.photoInfoGpsBadge,
+                      { borderColor: gpsColour(previewAccuracy) },
                     ]}
                   >
-                    {previewAccuracy == null
-                      ? "NO GPS"
-                      : `GPS ±${previewAccuracy.toFixed(1)} m`}
-                  </Text>
+                    <Text
+                      style={[
+                        styles.photoInfoGpsText,
+                        { color: gpsColour(previewAccuracy) },
+                      ]}
+                    >
+                      {previewAccuracy == null
+                        ? "NO GPS"
+                        : `GPS ±${previewAccuracy.toFixed(1)} m`}
+                    </Text>
+                  </View>
                 </View>
+                <View style={styles.photoInfoDetailsRow}>
+                  <View style={styles.photoInfoDetail}>
+                    <Text style={styles.photoInfoLabel}>PHOTO ID</Text>
+                    <Text style={styles.photoInfoValue}>
+                      {previewPhoto?.photoId || "—"}
+                    </Text>
+                  </View>
+                  <View style={styles.photoInfoDetail}>
+                    <Text style={styles.photoInfoLabel}>POINT ID</Text>
+                    <Text style={styles.photoInfoValue}>
+                      {previewPhoto?.pointId || "—"}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.photoInfoComment}>
+                  {previewPhoto?.comment || "No comment recorded"}
+                </Text>
               </View>
-              <View style={styles.photoInfoDetailsRow}>
-                <View style={styles.photoInfoDetail}>
-                  <Text style={styles.photoInfoLabel}>PHOTO ID</Text>
-                  <Text style={styles.photoInfoValue}>
-                    {previewPhoto?.photoId || "—"}
-                  </Text>
-                </View>
-                <View style={styles.photoInfoDetail}>
-                  <Text style={styles.photoInfoLabel}>POINT ID</Text>
-                  <Text style={styles.photoInfoValue}>
-                    {previewPhoto?.pointId || "—"}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.photoInfoComment}>
-                {previewPhoto?.comment || "No comment recorded"}
-              </Text>
-            </View>
 
-            <View style={styles.photoViewerToolbar}>
-              <ViewerAction
-                icon="↗"
-                label="Share"
-                onPress={() => onShare(previewPhoto)}
-              />
-              <ViewerAction
-                icon="⇩"
-                label="Save Copy"
-                onPress={() => onSaveCopy(previewPhoto)}
-              />
-              {previewPhoto?.deletedAt ? (
-                <>
+              <View style={styles.photoViewerToolbar}>
+                <ViewerAction
+                  icon="↗"
+                  label="Share"
+                  disabled={uploadBusy}
+                  onPress={() => onShare(previewPhoto)}
+                />
+                <ViewerAction
+                  icon="⇩"
+                  label="Save Copy"
+                  disabled={uploadBusy}
+                  onPress={() => onSaveCopy(previewPhoto)}
+                />
+                {!previewPhoto?.deletedAt ? (
                   <ViewerAction
-                    icon="↶"
-                    label="Restore"
-                    onPress={() => onRestore(previewPhoto)}
+                    icon="☁"
+                    label={thisPhotoUploadBusy ? `${uploadPercent}%` : "SharePoint"}
+                    disabled={uploadBusy}
+                    loading={thisPhotoUploadBusy}
+                    progress={uploadPercent}
+                    onPress={() => onUploadSharePoint(previewPhoto)}
                   />
+                ) : null}
+                {previewPhoto?.deletedAt ? (
+                  <>
+                    <ViewerAction
+                      icon="↶"
+                      label="Restore"
+                      disabled={uploadBusy}
+                      onPress={() => onRestore(previewPhoto)}
+                    />
+                    <ViewerAction
+                      icon="⌫"
+                      label="Delete"
+                      danger
+                      disabled={uploadBusy}
+                      onPress={() => onRequestDelete(previewPhoto, true)}
+                    />
+                  </>
+                ) : (
                   <ViewerAction
                     icon="⌫"
-                    label="Delete"
+                    label="Bin"
                     danger
-                    onPress={() => onRequestDelete(previewPhoto, true)}
+                    disabled={uploadBusy}
+                    onPress={() => onRequestDelete(previewPhoto, false)}
                   />
-                </>
-              ) : (
-                <ViewerAction
-                  icon="⌫"
-                  label="Bin"
-                  danger
-                  onPress={() => onRequestDelete(previewPhoto, false)}
-                />
-              )}
+                )}
+              </View>
             </View>
-          </View>
+          ) : null}
         </Animated.View>
+
+        <Modal
+          visible={typeEditorOpen}
+          transparent
+          animationType="slide"
+          onRequestClose={() => !typeSaving && setTypeEditorOpen(false)}
+        >
+          <Pressable
+            style={styles.classifySheetShade}
+            onPress={() => !typeSaving && setTypeEditorOpen(false)}
+          >
+            <Pressable
+              style={[
+                styles.classifySheet,
+                styles.photoTypeEditorSheet,
+                { paddingBottom: Math.max(insets.bottom, 14) },
+              ]}
+              onPress={() => {}}
+            >
+              <View style={styles.classifySheetHandle} />
+              <View style={styles.classifySheetHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.classifySectionEyebrow}>EDIT PHOTO</Text>
+                  <Text style={styles.classifySheetTitle}>Change image type</Text>
+                  <Text style={styles.photoTypeEditorDetail}>
+                    The photo will move to the matching gallery and export folder.
+                  </Text>
+                </View>
+                <Pressable
+                  style={styles.classifySheetClose}
+                  disabled={typeSaving}
+                  onPress={() => setTypeEditorOpen(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel image type change"
+                >
+                  <Text style={styles.photoTypeEditorCloseText}>×</Text>
+                </Pressable>
+              </View>
+
+              <ScrollView
+                style={styles.classifySheetScroll}
+                contentContainerStyle={styles.classifyGrid}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {[...SURVEY_IMAGE_TYPES, "Custom"].map((type) => {
+                  const selected = typeDraft === type;
+                  return (
+                    <Pressable
+                      key={type}
+                      style={[
+                        styles.classifyOption,
+                        selected && styles.classifyOptionSelected,
+                      ]}
+                      disabled={typeSaving}
+                      onPress={() => {
+                        setTypeDraft(type);
+                        if (type !== "Custom") setCustomTypeDraft("");
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.classifyOptionText,
+                          selected && styles.classifyOptionTextSelected,
+                        ]}
+                      >
+                        {type}
+                      </Text>
+                      {selected ? (
+                        <Text style={styles.photoTypeEditorTick}>✓</Text>
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+
+              {typeDraft === "Custom" ? (
+                <View style={styles.photoTypeEditorCustom}>
+                  <Text style={styles.classifyRecentLabel}>CUSTOM IMAGE TYPE</Text>
+                  <Input
+                    value={customTypeDraft}
+                    onChangeText={setCustomTypeDraft}
+                    placeholder="Enter custom image type"
+                    editable={!typeSaving}
+                  />
+                </View>
+              ) : null}
+
+              <Pressable
+                style={[
+                  styles.photoTypeEditorSave,
+                  (!typeDraft || (typeDraft === "Custom" && !customTypeDraft.trim()) || typeSaving) &&
+                    styles.classifySaveButtonDisabled,
+                ]}
+                disabled={!typeDraft || (typeDraft === "Custom" && !customTypeDraft.trim()) || typeSaving}
+                onPress={saveTypeChange}
+                accessibilityRole="button"
+                accessibilityLabel="Save image type change"
+              >
+                {typeSaving ? (
+                  <ActivityIndicator color={NAVY} size="small" />
+                ) : (
+                  <Text style={styles.photoTypeEditorSaveText}>Save image type</Text>
+                )}
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </Modal>
       </View>
     </Modal>
   );
 }
 
-function PhotoViewerPage({ photo, width, isActive, onZoomChange }) {
+function PhotoViewerPage({
+  photo,
+  width,
+  isActive,
+  onToggleChrome,
+  onZoomChange,
+}) {
   const scrollRef = useRef(null);
   const lastTapRef = useRef(0);
-  const touchStartRef = useRef(null);
+  const singleTapTimerRef = useRef(null);
   const zoomRef = useRef(1);
   const [pageHeight, setPageHeight] = useState(0);
   const [zoomEnabled, setZoomEnabled] = useState(false);
 
+  useEffect(
+    () => () => {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (isActive || !pageHeight) return;
+    if (isActive) return;
+    if (singleTapTimerRef.current) {
+      clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = null;
+    }
+    lastTapRef.current = 0;
+    if (!pageHeight) return;
     zoomRef.current = 1;
     setZoomEnabled(false);
     onZoomChange(false);
@@ -441,37 +647,25 @@ function PhotoViewerPage({ photo, width, isActive, onZoomChange }) {
     onZoomChange(zoomed);
   };
 
-  const handleTouchStart = (event) => {
-    const touches = event.nativeEvent.touches || [];
-    if (touches.length !== 1) {
-      touchStartRef.current = null;
-      lastTapRef.current = 0;
-      return;
-    }
-    const touch = touches[0];
-    touchStartRef.current = {
-      x: touch.pageX ?? touch.locationX ?? 0,
-      y: touch.pageY ?? touch.locationY ?? 0,
-    };
-  };
-
-  const handleTouchEnd = (event) => {
-    const touch = event.nativeEvent.changedTouches?.[0];
-    const start = touchStartRef.current;
-    touchStartRef.current = null;
-    if (!start || !touch) return;
-
-    const dx = (touch.pageX ?? touch.locationX ?? 0) - start.x;
-    const dy = (touch.pageY ?? touch.locationY ?? 0) - start.y;
-    if (Math.hypot(dx, dy) > 18) {
-      lastTapRef.current = 0;
-      return;
-    }
-
+  const handlePhotoPress = (event) => {
     const now = Date.now();
     const elapsed = now - lastTapRef.current;
-    lastTapRef.current = now;
-    if (elapsed > 300 || !pageHeight) return;
+    if (elapsed > 300) {
+      lastTapRef.current = now;
+      singleTapTimerRef.current = setTimeout(() => {
+        singleTapTimerRef.current = null;
+        lastTapRef.current = 0;
+        if (isActive) onToggleChrome();
+      }, 300);
+      return;
+    }
+
+    if (singleTapTimerRef.current) {
+      clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = null;
+    }
+    lastTapRef.current = 0;
+    if (!pageHeight) return;
 
     const responder = scrollRef.current;
     const scrollResponder = responder?.getScrollResponder?.() || responder;
@@ -486,8 +680,8 @@ function PhotoViewerPage({ photo, width, isActive, onZoomChange }) {
       return;
     }
 
-    const x = touch.locationX ?? width / 2;
-    const y = touch.locationY ?? pageHeight / 2;
+    const x = event.nativeEvent.locationX ?? width / 2;
+    const y = event.nativeEvent.locationY ?? pageHeight / 2;
     setZoomEnabled(true);
     onZoomChange(true);
     setTimeout(
@@ -525,44 +719,71 @@ function PhotoViewerPage({ photo, width, isActive, onZoomChange }) {
         directionalLockEnabled
         scrollEventThrottle={16}
         onScroll={handleZoom}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
+        onTouchCancel={() => {
+          lastTapRef.current = 0;
+          if (singleTapTimerRef.current) {
+            clearTimeout(singleTapTimerRef.current);
+            singleTapTimerRef.current = null;
+          }
+        }}
         showsHorizontalScrollIndicator={false}
         showsVerticalScrollIndicator={false}
       >
-        <Image
-          source={{ uri: resolvePhotoUri(photo) }}
-          style={[
-            styles.photoViewerImage,
-            { width, height: pageHeight || "100%" },
-          ]}
-          resizeMode="contain"
-        />
+        <Pressable
+          style={{ width, height: pageHeight || "100%" }}
+          onPress={handlePhotoPress}
+          accessibilityRole="button"
+          accessibilityLabel="Show or hide photo details"
+        >
+          <Image
+            source={{ uri: resolvePhotoUri(photo) }}
+            style={[
+              styles.photoViewerImage,
+              { width, height: pageHeight || "100%" },
+            ]}
+            resizeMode="contain"
+          />
+        </Pressable>
       </ScrollView>
     </Animated.View>
   );
 }
 
-function ViewerAction({ icon, label, onPress, danger = false }) {
+function ViewerAction({
+  icon,
+  label,
+  onPress,
+  danger = false,
+  disabled = false,
+  loading = false,
+  progress = 0,
+}) {
   return (
     <Pressable
+      disabled={disabled}
       style={({ pressed }) => [
         styles.viewerAction,
         danger && styles.viewerActionDanger,
+        disabled && !loading && styles.viewerActionDisabled,
         pressed && styles.viewerActionPressed,
       ]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ busy: loading, disabled }}
     >
-      <Text
-        style={[
-          styles.viewerActionIcon,
-          danger && styles.viewerActionIconDanger,
-        ]}
-      >
-        {icon}
-      </Text>
+      {loading ? (
+        <ActivityIndicator color={GOLD} size="small" />
+      ) : (
+        <Text
+          style={[
+            styles.viewerActionIcon,
+            danger && styles.viewerActionIconDanger,
+          ]}
+        >
+          {icon}
+        </Text>
+      )}
       <Text
         style={[
           styles.viewerActionLabel,
@@ -571,6 +792,16 @@ function ViewerAction({ icon, label, onPress, danger = false }) {
       >
         {label}
       </Text>
+      {loading ? (
+        <View style={styles.viewerActionProgressTrack}>
+          <View
+            style={[
+              styles.viewerActionProgressFill,
+              { width: `${Math.max(4, progress)}%` },
+            ]}
+          />
+        </View>
+      ) : null}
     </Pressable>
   );
 }

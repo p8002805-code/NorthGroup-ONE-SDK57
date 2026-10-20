@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
+import { reportDevelopmentError } from '../../services/security/securityLogger';
 
 const NG_LOGO = require('../../../assets/ng_logo_white.png');
 const TOPO_BANNER = require('../../../assets/topo-bg.png');
@@ -43,7 +44,7 @@ const uriToDataUri = async (uri, mimeType = 'image/jpeg') => {
     });
     return `data:${mimeType};base64,${base64}`;
   } catch (error) {
-    console.log('Could not load SE-14 export image:', error);
+    reportDevelopmentError('Could not load SE-14 export image', error);
     return null;
   }
 };
@@ -54,7 +55,7 @@ const assetToDataUri = async (assetModule, mimeType) => {
     await asset.downloadAsync();
     return uriToDataUri(asset.localUri || asset.uri, mimeType);
   } catch (error) {
-    console.log('Could not load SE-14 export asset:', error);
+    reportDevelopmentError('Could not load SE-14 export asset', error);
     return null;
   }
 };
@@ -124,7 +125,7 @@ const loadPhotos = async (se14, definitions) => {
       label,
       dataUri: source.uri ? await uriToDataUri(source.uri) : null,
       markId: source.markId || se14.markId,
-      sessionNumber: source.sessionNumber || se14.sessionNumber,
+      sessionNumber: se14.sessionNumber || source.sessionNumber,
     });
   }
   return photos;

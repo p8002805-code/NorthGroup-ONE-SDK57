@@ -9,13 +9,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AppActionCard from '../components/AppActionCard';
-import AppCard from '../components/AppCard';
-import AppHeader from '../components/AppHeader';
-import AppSectionHeader from '../components/AppSectionHeader';
 import LoadingOverlay from '../components/LoadingOverlay';
 import { FORMS } from '../constants/forms';
+import JobWorkspaceDock from '../features/jobs/components/JobWorkspaceDock';
 import { useTheme } from '../theme/ThemeContext';
-import { RADIUS, SPACING } from '../theme/spacing';
+import { SPACING } from '../theme/spacing';
 
 const FORM_DETAILS = {
   s500: {
@@ -53,8 +51,10 @@ export default function HomeScreen({
   playIntroLanding = false,
   onIntroLandingComplete,
   openForm,
-  goDashboard,
-  backLabel = 'Job Workspace',
+  job,
+  openWorkspace,
+  openJobFiles,
+  openCapture,
 }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -67,40 +67,20 @@ export default function HomeScreen({
   return (
     <View style={styles.page}>
       <StatusBar barStyle="light-content" backgroundColor={colors.navy} />
-      <AppHeader
-        eyebrow="JOB DOCUMENTS"
-        title="Forms"
-        subtitle="Create, save and export field records for the active job."
-        onBack={goDashboard}
-        backLabel={backLabel}
-        showTopo
-        compact
-      />
+      <View style={[styles.pageHeader, { paddingTop: insets.top + SPACING.sm }]}>
+        <Text style={styles.pageTitle}>Forms</Text>
+      </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: insets.bottom + SPACING.xxxl },
+          { paddingBottom: insets.bottom + 112 },
         ]}
       >
-        <AppCard style={styles.introCard} padding="compact">
-          <View style={styles.introIcon}>
-            <Text style={styles.introIconText}>▤</Text>
-          </View>
-          <View style={styles.introCopy}>
-            <Text style={styles.introTitle}>Active-job forms</Text>
-            <Text style={styles.introText}>
-              Job details are applied automatically and drafts stay with this workspace.
-            </Text>
-          </View>
-        </AppCard>
-
-        <AppSectionHeader
-          title="Available forms"
-          subtitle="Choose a record to begin or continue."
-        />
-
         {FORMS.map((form) => {
           const details = FORM_DETAILS[form.id] || {};
           return (
@@ -118,6 +98,15 @@ export default function HomeScreen({
         })}
       </ScrollView>
 
+      <JobWorkspaceDock
+        job={job}
+        activeTab="forms"
+        onWorkspace={openWorkspace}
+        onForms={undefined}
+        onJobFiles={openJobFiles}
+        onCapture={openCapture}
+      />
+
       {loading ? <LoadingOverlay text="Opening form…" /> : null}
     </View>
   );
@@ -128,43 +117,22 @@ const createStyles = (colors) => StyleSheet.create({
     flex: 1,
     backgroundColor: colors.pageBackground,
   },
+  pageHeader: {
+    minHeight: 76,
+    justifyContent: 'flex-end',
+    paddingHorizontal: SPACING.lg,
+    paddingBottom: SPACING.md,
+    backgroundColor: colors.navy,
+  },
+  pageTitle: {
+    color: colors.white,
+    fontSize: 24,
+    lineHeight: 29,
+    fontWeight: '900',
+    letterSpacing: -0.35,
+  },
   content: {
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.lg,
-  },
-  introCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: SPACING.xl,
-    borderColor: colors.divider,
-    backgroundColor: colors.warningBackground,
-  },
-  introIcon: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: SPACING.md,
-    borderRadius: RADIUS.md,
-    backgroundColor: colors.navy,
-  },
-  introIconText: {
-    color: colors.accent,
-    fontSize: 20,
-    fontWeight: '900',
-  },
-  introCopy: {
-    flex: 1,
-  },
-  introTitle: {
-    color: colors.bodyText,
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  introText: {
-    color: colors.supportingText,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 3,
   },
 });

@@ -10,6 +10,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,6 +22,13 @@ import {
 } from "../../welcome/utils/welcomeContent";
 import { useTheme } from "../../../theme/ThemeContext";
 import ProfileAvatar from "../../../components/ProfileAvatar";
+import NotificationBell from "../../notifications/components/NotificationBell";
+import NorthGroupBrandButton from "../../../components/NorthGroupBrandButton";
+import {
+  dashboardHeroHeightForWindow,
+  JOB_SHELL_HORIZONTAL_PADDING,
+  JOB_SHELL_TOP_OFFSET,
+} from "../../../theme/jobShellLayout";
 
 const useDashboardStyles = () => {
   const { colors } = useTheme();
@@ -42,7 +50,15 @@ function Section({ title, actionLabel, children }) {
   );
 }
 
-function QuickAction({ icon, label, accent = false, onPress, wide = false }) {
+function QuickAction({
+  icon,
+  label,
+  eyebrow = '',
+  accent = false,
+  completed = false,
+  onPress,
+  wide = false,
+}) {
   const styles = useDashboardStyles();
   return (
     <Pressable
@@ -51,15 +67,31 @@ function QuickAction({ icon, label, accent = false, onPress, wide = false }) {
         styles.actionCard,
         wide && styles.actionCardWide,
         accent && styles.actionCardAccent,
+        completed && styles.actionCardCompleted,
         pressed && styles.pressed,
       ]}
     >
-      <View style={[styles.actionIcon, accent && styles.actionIconAccent]}>
+      <View style={[
+        styles.actionIcon,
+        accent && styles.actionIconAccent,
+        completed && styles.actionIconCompleted,
+      ]}>
         <Text style={styles.actionIconText}>{icon}</Text>
       </View>
-      <Text style={[styles.actionLabel, accent && styles.actionLabelAccent]}>
-        {label}
-      </Text>
+      <View style={styles.actionCopy}>
+        {eyebrow ? (
+          <Text style={[
+            styles.actionEyebrow,
+            accent && styles.actionLabelAccent,
+            completed && styles.actionEyebrowCompleted,
+          ]}>
+            {eyebrow}
+          </Text>
+        ) : null}
+        <Text style={[styles.actionLabel, accent && styles.actionLabelAccent]}>
+          {label}
+        </Text>
+      </View>
       <Text style={[styles.actionArrow, accent && styles.actionLabelAccent]}>
         ›
       </Text>
@@ -72,11 +104,13 @@ const CONTINUE_WORK_ICONS = {
   s500: "\u2713",
   s501: "\u2713",
   s506: "\u2197",
+  workspace: "\u2197",
+  jobs: "\u2316",
 };
 
 function ContinueWorkCard({ work, onPress }) {
   const styles = useDashboardStyles();
-  const tone = ["progress", "complete"].includes(work?.tone)
+  const tone = ["progress", "complete", "ready"].includes(work?.tone)
     ? work.tone
     : "recommended";
   const icon = CONTINUE_WORK_ICONS[work?.type] || "\u2713";
@@ -146,16 +180,23 @@ export default function DashboardScreen({
   openTodaysJob,
   openJobs,
   continueWork,
+  continueSectionTitle = "Continue Working",
+  preStartAction,
+  recommendedQuickAction = "",
   openContinueWork,
   openPreStart,
   openGNSS,
   openPhotoCapture,
   openMoreTools,
+  openForms,
+  openJobFiles,
   openWeather,
   onRefreshWeather,
   weatherRefreshing = false,
   openFeed,
   openChats,
+  openNotifications,
+  notificationCount = 0,
   profilePhotoUri,
   profilePhotoRevision,
   recentlyOpened = [],
@@ -164,6 +205,8 @@ export default function DashboardScreen({
   const { colors } = useTheme();
   const styles = useDashboardStyles();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const heroHeight = dashboardHeroHeightForWindow(windowHeight);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollToTopAnimation = useRef(new Animated.Value(0)).current;
   const dashboardScrollRef = useRef(null);
@@ -293,46 +336,52 @@ export default function DashboardScreen({
         onScroll={handleScroll}
         onScrollBeginDrag={cancelScrollToTop}
         scrollEventThrottle={16}
-        bounces
-        alwaysBounceVertical
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + 30 }}
       >
         <ImageBackground
           source={require("../../../../assets/topo-bg.png")}
-          style={[styles.hero, { paddingTop: insets.top + 14 }]}
+          style={[
+            styles.hero,
+            { minHeight: heroHeight, paddingTop: insets.top + JOB_SHELL_TOP_OFFSET },
+          ]}
           imageStyle={styles.heroImage}
         >
           <View style={styles.heroShade} />
 
-          <View style={[styles.topRow, { top: insets.top + 14 }]}>
-            <View style={styles.brandRow}>
-              <Image
-                source={require("../../../../assets/logo-transparent.png")}
-                style={styles.logo}
-                resizeMode="contain"
-              />
-              <View>
-                <Text style={styles.brand}>NORTHGROUP</Text>
-                <Text style={styles.one}>ONE</Text>
-              </View>
-            </View>
+          <View style={[styles.topRow, { top: insets.top + JOB_SHELL_TOP_OFFSET }]}>
+            <NorthGroupBrandButton
+              onPress={openTodaysJob}
+              accessibilityLabel="NorthGroup One, open job workspace"
+              accessibilityHint="Returns to the active job workspace"
+            />
 
-            <Pressable
-              style={styles.profile}
-              onPress={openAccount}
-              accessibilityRole="button"
-              accessibilityLabel="Open profile and settings"
-            >
-              <ProfileAvatar
-                uri={profilePhotoUri}
-                revision={profilePhotoRevision}
-                initials={user.initials || user.firstName.charAt(0)}
-                size={36}
-                backgroundColor={colors.accent}
-                textColor={colors.navy}
+            <View style={styles.heroActions}>
+              <NotificationBell
+                count={notificationCount}
+                onPress={openNotifications}
+                color={colors.white}
+                badgeColor={colors.accent}
               />
-            </Pressable>
+              <Pressable
+                style={styles.profile}
+                onPress={openAccount}
+                accessibilityRole="button"
+                accessibilityLabel="Open profile and settings"
+              >
+                <ProfileAvatar
+                  uri={profilePhotoUri}
+                  revision={profilePhotoRevision}
+                  initials={user.initials || user.firstName.charAt(0)}
+                  size={36}
+                  backgroundColor={colors.accent}
+                  textColor={colors.navy}
+                />
+              </Pressable>
+            </View>
           </View>
 
           <Text style={styles.greeting}>
@@ -389,7 +438,7 @@ export default function DashboardScreen({
         </ImageBackground>
 
         <View style={styles.body}>
-          <Section title="Continue Working">
+          <Section title={continueSectionTitle}>
             <ContinueWorkCard work={continueWork} onPress={openContinueWork} />
           </Section>
 
@@ -397,25 +446,42 @@ export default function DashboardScreen({
             <View style={styles.actionGrid}>
               <QuickAction
                 icon="✓"
-                label="Start Pre-Start"
-                accent={continueWork?.type !== "se14"}
+                label={preStartAction?.label || "Start Pre-Start"}
+                eyebrow={preStartAction?.eyebrow || "DAILY SAFETY"}
+                completed={Boolean(preStartAction?.completed)}
+                accent={recommendedQuickAction === "preStart"}
                 onPress={openPreStart}
               />
               <QuickAction
                 icon="⌖"
                 label="Start GNSS Session"
-                accent={continueWork?.type === "se14"}
+                eyebrow={recommendedQuickAction === "gnss" ? "NEXT RECOMMENDED" : "FIELD SESSION"}
+                accent={recommendedQuickAction === "gnss"}
                 onPress={openGNSS}
               />
               <QuickAction
                 icon={"\u25c9"}
                 label="Photo Capture"
+                eyebrow="FIELD CAMERA"
                 onPress={openPhotoCapture}
               />
               <QuickAction
                 icon="+"
                 label="More Tools"
+                eyebrow="TOOLBOX"
                 onPress={openMoreTools}
+              />
+              <QuickAction
+                icon="▤"
+                label="Forms"
+                eyebrow="ACTIVE JOB"
+                onPress={openForms}
+              />
+              <QuickAction
+                icon="▣"
+                label="Job Files"
+                eyebrow="SHAREPOINT"
+                onPress={openJobFiles}
               />
             </View>
           </Section>
@@ -643,7 +709,14 @@ export default function DashboardScreen({
               </View>
               <Text style={styles.stickyJobArrow}>›</Text>
             </Pressable>
-            <View style={styles.stickyProfileSlot}>
+            <View style={styles.stickyActions}>
+              <NotificationBell
+                count={notificationCount}
+                onPress={openNotifications}
+                color={colors.white}
+                badgeColor={colors.accent}
+                size={21}
+              />
               <Pressable
                 style={styles.stickyProfile}
                 onPress={openAccount}
@@ -671,9 +744,8 @@ const createStyles = (colors) =>
   StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.pageBackground },
     hero: {
-      minHeight: 300,
-      paddingHorizontal: 20,
-      paddingBottom: 28,
+      paddingHorizontal: JOB_SHELL_HORIZONTAL_PADDING,
+      paddingBottom: 30,
       justifyContent: "flex-end",
       backgroundColor: colors.headerBackground,
     },
@@ -684,25 +756,16 @@ const createStyles = (colors) =>
     },
     topRow: {
       position: "absolute",
-      left: 20,
-      right: 20,
+      left: JOB_SHELL_HORIZONTAL_PADDING,
+      right: JOB_SHELL_HORIZONTAL_PADDING,
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
     },
-    brandRow: { flexDirection: "row", alignItems: "center" },
-    logo: { width: 43, height: 43, marginRight: 8 },
-    brand: {
-      color: colors.white,
-      fontSize: 11,
-      fontWeight: "800",
-      letterSpacing: 1.7,
-    },
-    one: {
-      color: colors.accent,
-      fontSize: 10,
-      fontWeight: "900",
-      letterSpacing: 3.2,
+    heroActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 3,
     },
     profile: {
       width: 40,
@@ -728,38 +791,38 @@ const createStyles = (colors) =>
       marginBottom: 20,
     },
     activeJobCard: {
-      minHeight: 82,
+      minHeight: 108,
       flexDirection: "row",
       alignItems: "center",
-      padding: 10,
-      borderRadius: 19,
-      borderWidth: 1,
+      padding: 12,
+      borderRadius: 22,
+      borderWidth: 1.5,
       borderColor: colors.accent,
       backgroundColor: colors.overlay,
     },
     activeJobMain: {
       flex: 1,
-      minHeight: 58,
+      minHeight: 80,
       flexDirection: "row",
       alignItems: "center",
-      borderRadius: 14,
-      paddingHorizontal: 4,
-      paddingVertical: 4,
+      borderRadius: 16,
+      paddingHorizontal: 5,
+      paddingVertical: 6,
     },
     activeJobMainPressed: { backgroundColor: "rgba(255,255,255,0.08)" },
     switchIcon: {
-      width: 43,
-      height: 43,
-      borderRadius: 14,
+      width: 58,
+      height: 58,
+      borderRadius: 17,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.accent,
     },
-    switchIconText: { color: colors.navy, fontSize: 23, fontWeight: "900" },
-    switchCopy: { flex: 1, minWidth: 0, marginLeft: 13 },
+    switchIconText: { color: colors.navy, fontSize: 28, fontWeight: "900" },
+    switchCopy: { flex: 1, minWidth: 0, marginLeft: 15 },
     switchEyebrow: {
       color: colors.accent,
-      fontSize: 9,
+      fontSize: 10,
       fontWeight: "900",
       letterSpacing: 1.4,
     },
@@ -773,7 +836,7 @@ const createStyles = (colors) =>
       flex: 1,
       minWidth: 0,
       color: "#FFFFFF",
-      fontSize: 20,
+      fontSize: 23,
       fontWeight: "900",
     },
     switchJobArrow: {
@@ -785,24 +848,24 @@ const createStyles = (colors) =>
     },
     switchCurrent: {
       color: "rgba(255,255,255,0.65)",
-      fontSize: 11,
-      marginTop: 2,
+      fontSize: 12,
+      marginTop: 4,
     },
     activeJobSwitch: {
-      minWidth: 84,
-      minHeight: 48,
-      marginLeft: 8,
-      paddingHorizontal: 13,
-      paddingVertical: 10,
-      borderRadius: 14,
+      minWidth: 88,
+      minHeight: 62,
+      marginLeft: 10,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderRadius: 16,
       borderWidth: 1,
-      borderColor: colors.divider,
-      backgroundColor: colors.accentSoft,
+      borderColor: colors.accent,
+      backgroundColor: colors.navy2,
       alignItems: "center",
       justifyContent: "center",
     },
     activeJobSwitchText: {
-      color: colors.navy,
+      color: "#FFFFFF",
       fontSize: 12,
       fontWeight: "900",
       letterSpacing: 0.6,
@@ -826,6 +889,10 @@ const createStyles = (colors) =>
       borderLeftColor: colors.success,
       backgroundColor: colors.successBackground,
     },
+    continueCard_ready: {
+      borderLeftColor: colors.success,
+      backgroundColor: colors.successBackground,
+    },
     continueIcon: {
       width: 40,
       height: 40,
@@ -836,6 +903,7 @@ const createStyles = (colors) =>
     continueIcon_recommended: { backgroundColor: colors.accent },
     continueIcon_progress: { backgroundColor: colors.success },
     continueIcon_complete: { backgroundColor: colors.success },
+    continueIcon_ready: { backgroundColor: colors.success },
     continueIconText: { color: colors.navy, fontSize: 20, fontWeight: "900" },
     continueCopy: { flex: 1, marginLeft: 12, paddingRight: 7 },
     continueEyebrow: {
@@ -865,6 +933,7 @@ const createStyles = (colors) =>
     continueAction_recommended: { color: colors.accentDark },
     continueAction_progress: { color: colors.statusSuccessText },
     continueAction_complete: { color: colors.statusSuccessText },
+    continueAction_ready: { color: colors.statusSuccessText },
     continueArrow: { fontSize: 22, lineHeight: 22, marginTop: 1 },
     body: { paddingHorizontal: 18 },
     section: { marginTop: 23 },
@@ -900,6 +969,10 @@ const createStyles = (colors) =>
       borderColor: colors.accent,
       backgroundColor: colors.accent,
     },
+    actionCardCompleted: {
+      borderColor: colors.success,
+      backgroundColor: colors.successBackground,
+    },
     pressed: { opacity: 0.78, transform: [{ scale: 0.985 }] },
     actionIcon: {
       width: 38,
@@ -910,13 +983,22 @@ const createStyles = (colors) =>
       backgroundColor: colors.raisedSurface,
     },
     actionIconAccent: { backgroundColor: "rgba(6,26,45,0.12)" },
+    actionIconCompleted: { backgroundColor: colors.success },
     actionIconText: { fontSize: 19 },
+    actionCopy: { marginTop: 9, paddingRight: 16 },
+    actionEyebrow: {
+      color: colors.textMuted,
+      fontSize: 7,
+      lineHeight: 10,
+      fontWeight: "900",
+      letterSpacing: 0.8,
+    },
+    actionEyebrowCompleted: { color: colors.statusSuccessText },
     actionLabel: {
       color: colors.bodyText,
       fontSize: 14,
       fontWeight: "800",
-      marginTop: 12,
-      paddingRight: 16,
+      marginTop: 2,
     },
     actionLabelAccent: { color: colors.navy },
     actionArrow: {
@@ -1185,11 +1267,13 @@ const createStyles = (colors) =>
       fontSize: 22,
       fontWeight: "900",
     },
-    stickyProfileSlot: {
+    stickyActions: {
       width: 94,
       minHeight: 48,
-      alignItems: "flex-end",
+      flexDirection: "row",
+      alignItems: "center",
       justifyContent: "center",
+      gap: 1,
     },
     stickyProfile: {
       width: 38,

@@ -8,28 +8,25 @@ import React, {
 import {
   Alert,
   AppState,
+  Linking,
+  View,
 } from "react-native";
-
 import { Asset } from "expo-asset";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-
+import * as Network from "expo-network";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-
+import AppPrivacyShield from "./src/components/AppPrivacyShield";
+import { reportDevelopmentError } from "./src/services/security/securityLogger";
+import { archiveStaleForm, parseStoredJson } from "./src/utils/safeStorage";
 import { NavigationContainer } from "@react-navigation/native";
-
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-
 import { emptyS500, emptySE14 } from "./src/data/emptyForms";
-
 import {
   exportS500Pdf as exportS500PdfFile,
   emailS500Pdf as emailS500PdfFile,
 } from "./src/export/exportS500Pdf";
-
 import { exportSE14Pdf as exportSE14PdfFile } from "./src/export/exportSE14Pdf";
-
 import IntroScreen from "./src/screens/IntroScreen";
-import HomeScreen from "./src/screens/HomeScreen";
 import FieldToolsScreen from "./src/features/fieldTools/screens/FieldToolsScreen";
 import FeatureScannerScreen from "./src/features/scanner/screens/FeatureScannerScreen";
 import S500FormScreen from "./src/screens/S500FormScreen";
@@ -39,8 +36,8 @@ import S501FormScreen from "./src/screens/S501FormScreen";
 import S506FormScreen from "./src/screens/S506FormScreen";
 import SE14MeasurementGuideScreen from "./src/screens/SE14MeasurementGuideScreen";
 import SE14InProgressScreen from "./src/screens/SE14InProgressScreen";
-
 import {
+  archiveSE14Record as archiveSE14RecordState,
   createSE14Record,
   getSE14CompletionIssue,
   getSE14FieldCompletionIssue,
@@ -49,28 +46,36 @@ import {
   normaliseSE14Records,
   SE14_DRAFT_KEY,
   SE14_IN_PROGRESS_KEY,
+  restoreSE14Record as restoreSE14RecordState,
   sortSE14Records,
   updateSE14Record,
 } from "./src/utils/se14Records";
 import { deleteSE14FormPhotos } from "./src/utils/se14PhotoStorage";
-
+import { persistSE14UploadCompletion, saveSE14ForUploadDayWithFeedback } from "./src/features/gnss/se14OfflineQueue";
+import { applySE14RoundAssignment, resolveSE14RoundAssignment } from "./src/features/gnss/se14Rounds";
+import { saveSE14BulkSessionNumberEdit } from "./src/features/gnss/se14BulkSessionEdit";
 import TmrFeatureGuideScreen from "./src/features/tmrFeatureGuide/screens/TmrFeatureGuideScreen";
 import TmrFeatureDetailsScreen from "./src/features/tmrFeatureGuide/screens/TmrFeatureDetailsScreen";
 import TmrFeatureCameraScreen from "./src/features/tmrFeatureGuide/screens/TmrFeatureCameraScreen";
 import TmrFeaturePhotoReviewScreen from "./src/features/tmrFeatureGuide/screens/TmrFeaturePhotoReviewScreen";
 import WelcomeScreen from "./src/features/welcome/screens/WelcomeScreen";
 import DashboardScreen from "./src/features/dashboard/screens/DashboardScreen";
+import { buildDashboardWorkflow } from "./src/features/dashboard/dashboardWorkflow";
 import SurveyPhotoScreen from "./src/features/surveyPhoto/screens/SurveyPhotoScreen";
 import ChatHomeScreen from "./src/features/chat/screens/ChatHomeScreen";
 import JobChatScreen from "./src/features/chat/screens/JobChatScreen";
 import TeamsChannelScreen from "./src/features/chat/screens/TeamsChannelScreen";
 import AccountScreen from "./src/features/account/screens/AccountScreen";
+import DiagnosticsScreen from "./src/features/account/screens/DiagnosticsScreen";
 import ProfileSetupScreen from "./src/features/account/screens/ProfileSetupScreen";
 import MicrosoftSignInScreen from "./src/features/auth/screens/MicrosoftSignInScreen";
 import useMicrosoftAuth from "./src/features/auth/useMicrosoftAuth";
-import JobWorkspaceScreen from "./src/features/jobs/screens/JobWorkspaceScreen";
-import JobFilesScreen from "./src/features/jobFiles/screens/JobFilesScreen";
+import { isTrustedJobFileWebUrl } from "./src/features/jobFiles/jobFilesRules";
+import { processSurveyPhotoUploadOutbox } from "./src/features/surveyPhoto/services/surveyPhotoUploadProcessor";
+import JobHubScreen from "./src/features/jobs/screens/JobHubScreen";
+import KmlEditorScreen from "./src/features/kml/screens/KmlEditorScreen";
 import JobsScreen from "./src/features/jobs/screens/JobsScreen";
+import NotificationsScreen from "./src/features/notifications/screens/NotificationsScreen";
 import {
   attachJob,
   ACTIVE_JOB_KEY,
@@ -87,11 +92,21 @@ import {
 } from "./src/features/jobs/jobContext";
 import { loadAssignedTeamsJobs } from "./src/features/jobs/teamsShiftsService";
 import {
+  addNotification,
+  getUnreadNotificationCount,
+} from "./src/features/notifications/notificationService";
+import {
+  syncNotificationActivity,
+} from "./src/features/notifications/notificationActivityService";
+import {
   FORM_STATUS_STORAGE_KEY,
   loadFormStatuses,
   saveFormStatus,
 } from "./src/utils/formStatus";
-import { isS500Complete } from "./src/utils/s500Status";
+import {
+  hasMeaningfulS500Draft,
+  isS500Complete,
+} from "./src/utils/s500Status";
 import {
   isS501Complete,
   isS506Complete,
@@ -106,29 +121,55 @@ import {
   isProfileSetupComplete,
   loadAccountProfile,
   normaliseProfile,
+  profileInitials,
   PROFILE_SETUP_KEY,
   saveAccountProfile,
 } from "./src/features/account/accountProfile";
 import {
+  migrateLegacyAccountWorkspace,
+} from "./src/features/account/accountWorkspace";
+import {
   accountStorageKey,
   clearActiveAccountId,
-  migrateLegacyAccountWorkspace,
   setActiveAccountId,
-} from "./src/features/account/accountWorkspace";
+} from "./src/services/account/accountIdentity";
 import { ThemeProvider } from "./src/theme/ThemeContext";
 import {
   loadWeatherForecast,
   WEATHER_LOADING,
 } from "./src/features/weather/weatherService";
 import WorkspaceLoadingScreen from "./src/components/WorkspaceLoadingScreen";
+import { FEATURE_SCANNER_ENABLED } from "./src/config/featureFlags";
 import {
-  RECENTLY_OPENED_ITEMS,
+  normaliseRecentlyOpenedItem,
   RECENTLY_OPENED_KEY,
   RECENTLY_OPENED_LIMIT,
 } from "./src/navigation/recentlyOpened";
-
+import {
+  getLocalDateKey,
+  isS500FormFromDate,
+  operationalFormForToday,
+} from "./src/utils/dailyFormReset";
 const Stack = createNativeStackNavigator();
 const WEATHER_PREFERENCE_KEY = "northgroup_one_weather_preference_v1";
+const openJobHubFromStack = (navigation, tab = "workspace", params = {}) => {
+  const routes = navigation.getState()?.routes || [];
+  const request = {
+    tab,
+    requestKey: `${Date.now()}-${routes.length}`,
+    pendingUpload: null,
+    formLabel: "",
+    focus: null,
+    jobDetailsSectionId: "",
+    shellTransition: false,
+    ...params,
+  };
+  if (routes.some((route) => route.name === "JobHub")) {
+    navigation.popTo("JobHub", request);
+    return;
+  }
+  navigation.navigate("JobHub", request);
+};
 const migrateProfile = (savedProfile) => {
   if (!savedProfile) return normaliseProfile(emptyAccountProfile);
   return normaliseProfile(savedProfile);
@@ -148,37 +189,11 @@ const microsoftProfile = (account) => migrateProfile({
   microsoftConnectedAt: new Date().toISOString(),
 });
 
-const S500_DRAFT_META_KEYS = new Set([
-  "jobNumber",
-  "completedBy",
-  "hazardRowCount",
-  "deletedHazardRows",
-  "deletedPpeKeys",
-  "customPpeItems",
-]);
-
-const hasMeaningfulS500Draft = (form) =>
-  Object.keys(emptyS500).some((key) => {
-    if (S500_DRAFT_META_KEYS.has(key)) return false;
-
-    const value = form?.[key];
-    const baseline = emptyS500[key];
-
-    if (Array.isArray(value)) return value.length > 0;
-    if (typeof value === "boolean") return value && value !== baseline;
-
-    return String(value ?? "").trim() !== String(baseline ?? "").trim();
-  });
-
 function AppContent() {
   const microsoftAuth = useMicrosoftAuth();
   const [showIntro, setShowIntro] = useState(true);
   const [showWelcome, setShowWelcome] = useState(false);
-
-  const [playHomeLanding, setPlayHomeLanding] = useState(false);
-
   const [selectedTmrFeature, setSelectedTmrFeature] = useState(null);
-
   const [capturedTmrPhotoUri, setCapturedTmrPhotoUri] = useState(null);
 
   const [loading] = useState(false);
@@ -194,7 +209,15 @@ function AppContent() {
   const [weatherPreference, setWeatherPreference] = useState("job");
   const [weatherRefreshing, setWeatherRefreshing] = useState(false);
   const [recentlyOpened, setRecentlyOpened] = useState([]);
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const weatherRequestId = useRef(0);
+  const notificationActivityRequestRef = useRef(false);
+  const s500ActiveDateRef = useRef(getLocalDateKey());
+  // Job switches run one at a time (see switchWorkspace) so a slow load can
+  // never land after a newer one.
+  const workspaceQueue = useRef(Promise.resolve());
+  const activeJobRef = useRef(null);
+  const s500Ref = useRef(emptyS500);
   const formProfile = useMemo(
     () => ({
       ...profile,
@@ -203,8 +226,48 @@ function AppContent() {
     [profile],
   );
   const [se14InProgress, setSE14InProgress] = useState([]);
+  const se14InProgressRef = useRef(se14InProgress);
+  se14InProgressRef.current = se14InProgress;
+  activeJobRef.current = activeJob;
+  s500Ref.current = s500;
   const [activeSE14RecordId, setActiveSE14RecordId] = useState(null);
   const [formStatuses, setFormStatuses] = useState({});
+
+  useEffect(() => {
+    if (!profileHydrated || !microsoftAuth.account?.id || !profileSetupComplete) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const retryPhotoUploads = () => {
+      if (cancelled) return;
+      processSurveyPhotoUploadOutbox({
+        getAccessToken: microsoftAuth.getAccessToken,
+        initials: profileInitials(formProfile),
+      }).catch(() => undefined);
+    };
+    retryPhotoUploads();
+
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") retryPhotoUploads();
+    });
+    const networkSubscription = Network.addNetworkStateListener((state) => {
+      if (state?.isConnected !== false && state?.isInternetReachable !== false) {
+        retryPhotoUploads();
+      }
+    });
+    return () => {
+      cancelled = true;
+      subscription.remove();
+      networkSubscription.remove();
+    };
+  }, [
+    microsoftAuth.account?.id,
+    microsoftAuth.getAccessToken,
+    profileHydrated,
+    profileSetupComplete,
+    formProfile.initials,
+  ]);
 
   const updateCurrentFormStatus = async (formId, status, details = {}) => {
     if (!activeJob) return {};
@@ -218,103 +281,17 @@ function AppContent() {
     return nextStatuses;
   };
 
-  const continueWork = useMemo(() => {
-    const inProgressRecord = se14InProgress.find(
-      (record) => record?.status !== "complete",
-    );
+  const dashboardWorkflow = useMemo(() => buildDashboardWorkflow({
+    activeJob,
+    formProfile,
+    formStatuses,
+    s500,
+    se14InProgress,
+  }), [activeJob, formProfile, formStatuses, s500, se14InProgress]);
+  const continueWork = dashboardWorkflow.focus;
 
-    if (inProgressRecord) {
-      const markId = String(
-        inProgressRecord.data?.markId || "Mark pending",
-      ).trim();
-      const sessionNumber = String(
-        inProgressRecord.data?.sessionNumber || "",
-      ).trim();
-      const sessionLabel = sessionNumber
-        ? `Session ${sessionNumber}`
-        : "SE-14 static session";
-
-      return {
-        type: "se14",
-        tone: "progress",
-        icon: "\u2316",
-        eyebrow: "END SESSION",
-        title: "GNSS session ready to finish",
-        detail: `${markId} \u00b7 ${sessionLabel}`,
-        actionLabel: "Open GNSS workspace",
-        recordId: inProgressRecord.id,
-      };
-    }
-
-    const s500Complete = isS500Complete(s500, formProfile);
-    const hasS500Draft =
-      !s500Complete &&
-      (formStatuses.s500?.status === "draft" ||
-        (!formStatuses.s500 && hasMeaningfulS500Draft(s500)));
-
-    if (hasS500Draft) {
-      return {
-        type: "s500",
-        tone: "recommended",
-        icon: "\u2713",
-        eyebrow: "S-500 DRAFT",
-        title: "Pre-Start draft incomplete",
-        detail: `${activeJob?.number || "Active job"} \u00b7 Saved on this phone`,
-        actionLabel: "Continue pre-start",
-      };
-    }
-
-    if (formStatuses.s501?.status === "draft") {
-      return {
-        type: "s501",
-        tone: "recommended",
-        icon: "\u2713",
-        eyebrow: "S-501 DRAFT",
-        title: "Vehicle pre-start draft incomplete",
-        detail: `${activeJob?.number || "Active job"} \u00b7 Saved on this phone`,
-        actionLabel: "Continue S-501",
-      };
-    }
-
-    if (formStatuses.s506?.status === "draft") {
-      return {
-        type: "s506",
-        tone: "recommended",
-        icon: "\u2197",
-        eyebrow: "S-506 DRAFT",
-        title: "Journey plan draft incomplete",
-        detail: `${activeJob?.number || "Active job"} \u00b7 Saved on this phone`,
-        actionLabel: "Continue S-506",
-      };
-    }
-
-    if (s500Complete || formStatuses.s500?.status === "complete") {
-      return {
-        type: "s500",
-        tone: "complete",
-        icon: "\u2713",
-        eyebrow: "READY FOR TODAY",
-        title: "Pre-Start complete",
-        detail: `${activeJob?.number || "Active job"} \u00b7 Ready for field work`,
-        actionLabel: "View pre-start",
-      };
-    }
-
-    return {
-      type: "s500",
-      tone: "recommended",
-      icon: "\u2713",
-      eyebrow: "RECOMMENDED NEXT STEP",
-      title: "Start your field day",
-      detail: activeJob?.number
-        ? `${activeJob.number} \u00b7 Complete the daily pre-start before heading out.`
-        : "Select an active job before starting the daily pre-start.",
-      actionLabel: activeJob ? "Start pre-start" : "Choose a job",
-    };
-  }, [activeJob, formProfile, formStatuses, s500, se14InProgress]);
-
-  const recordRecentlyOpened = useCallback(async (id) => {
-    const item = RECENTLY_OPENED_ITEMS[id];
+  const recordRecentlyOpened = useCallback(async (value) => {
+    const item = normaliseRecentlyOpenedItem(value);
     if (!item) return;
 
     setRecentlyOpened((current) => {
@@ -333,9 +310,34 @@ function AppContent() {
   }, []);
 
   const openRecentlyOpenedItem = useCallback(
-    (item, navigation) => {
+    async (item, navigation) => {
       const id = item?.id || item;
-      recordRecentlyOpened(id);
+      const recentItem = normaliseRecentlyOpenedItem(item);
+      recordRecentlyOpened(recentItem || id);
+
+      if (recentItem?.type === "jobFile") {
+        if (recentItem.webUrl) {
+          if (!isTrustedJobFileWebUrl(recentItem.webUrl)) {
+            Alert.alert(
+              "SharePoint link blocked",
+              "This saved link is not a secure NorthGroup SharePoint address. Open Job Files and refresh it.",
+            );
+            return;
+          }
+          try {
+            await Linking.openURL(recentItem.webUrl);
+          } catch {
+            Alert.alert(
+              "Could not open recent file",
+              "Open Job Files and try this SharePoint item again.",
+            );
+          }
+          return;
+        }
+
+        openJobHubFromStack(navigation, "files");
+        return;
+      }
 
       if (
         ["s500", "se14", "s501", "s506", "surveyPhoto"].includes(id) &&
@@ -372,6 +374,7 @@ function AppContent() {
   const loadSavedForms = async (microsoftAccount) => {
     try {
       setActiveAccountId(microsoftAccount.id);
+      setNotificationUnreadCount(await getUnreadNotificationCount());
       const migration = await migrateLegacyAccountWorkspace({
         account: microsoftAccount,
         profileKey: ACCOUNT_PROFILE_KEY,
@@ -467,7 +470,7 @@ function AppContent() {
         if (Array.isArray(parsedRecentlyOpened)) {
           setRecentlyOpened(
             parsedRecentlyOpened
-              .map((item) => RECENTLY_OPENED_ITEMS[item?.id])
+              .map(normaliseRecentlyOpenedItem)
               .filter(Boolean)
               .slice(0, RECENTLY_OPENED_LIMIT),
           );
@@ -558,13 +561,22 @@ function AppContent() {
         }
       }
     } catch (error) {
-      console.log("Could not load saved forms", error);
+      reportDevelopmentError("Could not load saved forms", error);
     } finally {
       setProfileHydrated(true);
     }
   };
 
-  const loadJobWorkspace = async (job, profileOverride = formProfile) => {
+  const loadJobWorkspace = async (
+    job,
+    profileOverride = formProfile,
+    { commitJob } = {},
+  ) => {
+    const s500Key = jobStorageKey("s500_form", job);
+    const s501Key = jobStorageKey("s501_form", job);
+    const s506Key = jobStorageKey("s506_form", job);
+    const draftKey = jobStorageKey(SE14_DRAFT_KEY, job);
+    const recordsKey = jobStorageKey(SE14_IN_PROGRESS_KEY, job);
     const [
       savedS500,
       savedSE14,
@@ -573,24 +585,49 @@ function AppContent() {
       savedS506,
       savedStatuses,
     ] = await Promise.all([
-      AsyncStorage.getItem(jobStorageKey("s500_form", job)),
-      AsyncStorage.getItem(jobStorageKey(SE14_DRAFT_KEY, job)),
-      AsyncStorage.getItem(jobStorageKey(SE14_IN_PROGRESS_KEY, job)),
-      AsyncStorage.getItem(jobStorageKey("s501_form", job)),
-      AsyncStorage.getItem(jobStorageKey("s506_form", job)),
+      AsyncStorage.getItem(s500Key),
+      AsyncStorage.getItem(draftKey),
+      AsyncStorage.getItem(recordsKey),
+      AsyncStorage.getItem(s501Key),
+      AsyncStorage.getItem(s506Key),
       loadFormStatuses(job),
     ]);
     const workspaceProfile = profileOverride || formProfile;
     const nextStatuses = { ...savedStatuses };
+
+    // Parse every saved value once. A corrupt value no longer stops the whole
+    // workspace from loading; a copy of it is kept in the archive instead.
+    const [
+      storedS500,
+      storedSE14,
+      storedRecords,
+      storedS501,
+      storedS506,
+    ] = await Promise.all([
+      parseStoredJson(s500Key, savedS500, null),
+      parseStoredJson(draftKey, savedSE14, null),
+      parseStoredJson(recordsKey, savedRecords, null),
+      parseStoredJson(s501Key, savedS501, null),
+      parseStoredJson(s506Key, savedS506, null),
+    ]);
+
+    const parsedS500 = storedS500 ? { ...emptyS500, ...storedS500 } : emptyS500;
+    const savedS500IsFromToday = !savedS500 || isS500FormFromDate(parsedS500);
     const loadedS500 = applyProfileDefaults(
       attachJob(
-        savedS500 ? { ...emptyS500, ...JSON.parse(savedS500) } : emptyS500,
+        savedS500IsFromToday ? parsedS500 : emptyS500,
         job,
       ),
       workspaceProfile,
       "s500",
       job,
     );
+
+    // Yesterday's forms are archived, not deleted.
+    if (!savedS500IsFromToday) {
+      await archiveStaleForm(s500Key, savedS500, { reason: "new-day" });
+      delete nextStatuses.s500;
+    }
 
     const s500Status = isS500Complete(loadedS500, workspaceProfile)
       ? "complete"
@@ -606,56 +643,104 @@ function AppContent() {
       };
     }
 
-    if (savedS501) {
-      const parsedS501 = { ...JSON.parse(savedS501) };
+    if (storedS501 && operationalFormForToday(storedS501)) {
       nextStatuses.s501 = {
-        status: isS501Complete(parsedS501) ? "complete" : "draft",
-        date: String(parsedS501.date || ""),
+        status: isS501Complete(storedS501) ? "complete" : "draft",
+        date: String(storedS501.date || ""),
       };
+    } else if (savedS501) {
+      await archiveStaleForm(s501Key, savedS501, { reason: "new-day" });
+      delete nextStatuses.s501;
     }
-    if (savedS506) {
-      const parsedS506 = { ...JSON.parse(savedS506) };
+    if (storedS506 && operationalFormForToday(storedS506)) {
       nextStatuses.s506 = {
-        status: isS506Complete(parsedS506) ? "complete" : "draft",
-        date: String(parsedS506.date || ""),
+        status: isS506Complete(storedS506) ? "complete" : "draft",
+        date: String(storedS506.date || ""),
       };
+    } else if (savedS506) {
+      await archiveStaleForm(s506Key, savedS506, { reason: "new-day" });
+      delete nextStatuses.s506;
     }
-    setS500(loadedS500);
-    setSE14(
-      applyProfileDefaults(
-        attachJob(
-          savedSE14 ? normaliseSE14Form(JSON.parse(savedSE14)) : emptySE14,
-          job,
-          "projectNumber",
-        ),
-        workspaceProfile,
-        "se14",
+
+    const loadedSE14 = applyProfileDefaults(
+      attachJob(
+        storedSE14 ? normaliseSE14Form(storedSE14) : emptySE14,
         job,
+        "projectNumber",
       ),
+      workspaceProfile,
+      "se14",
+      job,
     );
-    setSE14InProgress(
-      savedRecords
-        ? sortSE14Records(normaliseSE14Records(JSON.parse(savedRecords)))
-        : [],
-    );
+    const loadedRecords = Array.isArray(storedRecords)
+      ? sortSE14Records(normaliseSE14Records(storedRecords))
+      : [];
+
+    // Everything above only READ. Now swap the job and its forms in together
+    // (same tick) so the app never holds job B with job A's forms.
+    commitJob?.();
+    setS500(loadedS500);
+    setSE14(loadedSE14);
+    setSE14InProgress(loadedRecords);
     setFormStatuses(nextStatuses);
     setActiveSE14RecordId(null);
   };
 
+  // Runs job switches strictly one after another. `getResult` does the
+  // saving (saveActiveJob / createJob) and returns { active, jobs }.
+  const switchWorkspace = (getResult, profileOverride) => {
+    const task = async () => {
+      const result = await getResult();
+      await loadJobWorkspace(result.active, profileOverride, {
+        commitJob: () => {
+          setActiveJob(result.active);
+          setJobs(result.jobs);
+        },
+      });
+      return result;
+    };
+    const run = workspaceQueue.current.then(task, task);
+    workspaceQueue.current = run.catch(() => undefined);
+    return run;
+  };
+
   const activateJob = async (job, navigation) => {
-    const result = await saveActiveJob(job, jobs);
-    setActiveJob(result.active);
-    setJobs(result.jobs);
-    await loadJobWorkspace(result.active);
+    await switchWorkspace(() => saveActiveJob(job, jobs));
     navigation.navigate("Dashboard");
   };
 
-  const refreshTeamsJobs = useCallback(async () => {
+  const refreshTeamsJobs = useCallback(async ({ notify = true } = {}) => {
     const accessToken = await microsoftAuth.getAccessToken();
     const imported = await loadAssignedTeamsJobs({
       accessToken,
       userId: microsoftAuth.account?.id,
     });
+    const existingNumbers = new Set(
+      jobs.map((job) => String(job?.number || '').trim().toUpperCase()).filter(Boolean),
+    );
+    const newJobs = imported.filter((job) => (
+      job?.number
+      && !existingNumbers.has(String(job.number).trim().toUpperCase())
+    ));
+    if (notify && newJobs.length) {
+      let addedCount = 0;
+      for (const job of newJobs) {
+        const result = await addNotification({
+          type: "job",
+          title: "New job added",
+          message: [job.number, job.name, job.location].filter(Boolean).join(" · "),
+          sourceId: `teams-job-${String(job.number).trim().toUpperCase()}`,
+          dedupeKey: `teams-job-${String(job.number).trim().toUpperCase()}`,
+          target: "Jobs",
+          jobNumber: job.number,
+          icon: "briefcase-outline",
+        });
+        if (result.added) addedCount += 1;
+      }
+      if (addedCount) {
+        setNotificationUnreadCount((current) => current + addedCount);
+      }
+    }
     const nextJobs = await mergeTeamsJobs(imported, jobs);
     setJobs(nextJobs);
     if (activeJob?.number) {
@@ -674,12 +759,49 @@ function AppContent() {
     return imported.length;
   }, [activeJob?.number, jobs, microsoftAuth.account?.id, microsoftAuth.getAccessToken]);
 
+  const refreshNotificationActivity = useCallback(async () => {
+    if (
+      notificationActivityRequestRef.current
+      || !profileHydrated
+      || !profileSetupComplete
+      || !microsoftAuth.account?.id
+    ) return null;
+
+    notificationActivityRequestRef.current = true;
+    try {
+      const accessToken = await microsoftAuth.getAccessToken();
+      const result = await syncNotificationActivity({
+        accessToken,
+        accountId: microsoftAuth.account.id,
+        activeJob,
+      });
+      if (result?.addedCount) {
+        setNotificationUnreadCount(await getUnreadNotificationCount());
+      }
+      return result;
+    } catch (error) {
+      // Activity checks are intentionally quiet. The Feed and Job Chat screens
+      // still show their own connection errors when the user opens them.
+      reportDevelopmentError("Could not refresh notification activity", error);
+      return null;
+    } finally {
+      notificationActivityRequestRef.current = false;
+    }
+  }, [
+    activeJob,
+    microsoftAuth.account?.id,
+    microsoftAuth.getAccessToken,
+    profileHydrated,
+    profileSetupComplete,
+  ]);
   useEffect(() => {
     Promise.all([
       Asset.loadAsync(require("./assets/topo-bg.png")),
+      Asset.loadAsync(require("./assets/topo-bg-vertical.png")),
+      Asset.loadAsync(require("./assets/first-welcome-field-heritage.jpg")),
       Asset.loadAsync(require("./assets/logo-transparent.png")),
     ]).catch((error) => {
-      console.log("Could not prepare app assets", error);
+      reportDevelopmentError("Could not prepare app assets", error);
     });
   }, []);
 
@@ -698,6 +820,7 @@ function AppContent() {
       setSE14InProgress([]);
       setFormStatuses({});
       setRecentlyOpened([]);
+      setNotificationUnreadCount(0);
       return;
     }
 
@@ -710,9 +833,10 @@ function AppContent() {
     setSE14InProgress([]);
     setFormStatuses({});
     setRecentlyOpened([]);
+    setNotificationUnreadCount(0);
     setActiveAccountId(microsoftAuth.account.id);
     loadSavedForms(microsoftAuth.account).catch((error) => {
-      console.log("Could not prepare account workspace", error);
+      reportDevelopmentError("Could not prepare account workspace", error);
       setProfile(microsoftProfile(microsoftAuth.account));
       setProfileHydrated(true);
       setProfileSetupComplete(false);
@@ -755,7 +879,7 @@ function AppContent() {
         forceRefresh: Boolean(activeJob),
         nextPreference: weatherPreference,
       }).catch((error) => {
-        if (active) console.log("Could not refresh weather", error);
+        if (active) reportDevelopmentError("Could not refresh weather", error);
       });
     };
 
@@ -780,6 +904,90 @@ function AppContent() {
     weatherPreference,
   ]);
 
+  useEffect(() => {
+    if (!profileHydrated || !activeJob) return undefined;
+
+    const resetForNewDay = async () => {
+      const today = getLocalDateKey();
+      if (today === s500ActiveDateRef.current) return;
+
+      // Archive yesterday's forms BEFORE clearing anything. If archiving
+      // fails this throws, nothing has been touched, and the next tick retries
+      // (the date marker below is only moved once everything succeeded).
+      const jobAtReset = activeJob;
+      for (const base of ["s500_form", "s501_form", "s506_form"]) {
+        const key = jobStorageKey(base, jobAtReset);
+        const stored = await AsyncStorage.getItem(key);
+        if (base === "s500_form" && hasMeaningfulS500Draft(s500Ref.current)) {
+          // Unsaved on-screen edits are newer than the stored copy.
+          await archiveStaleForm(key, JSON.stringify(s500Ref.current), {
+            reason: "new-day",
+            remove: false,
+          });
+        }
+        await archiveStaleForm(key, stored, { reason: "new-day" });
+      }
+
+      // The user may have switched jobs while we were archiving.
+      if (activeJobRef.current?.number !== jobAtReset?.number) return;
+
+      s500ActiveDateRef.current = today;
+      setS500(applyProfileDefaults(
+        attachJob(emptyS500, jobAtReset),
+        formProfile,
+        "s500",
+        jobAtReset,
+      ));
+      // One at a time: each call reads, edits and rewrites the same status
+      // record, so running them together lets one overwrite the other.
+      for (const formId of ["s500", "s501", "s506"]) {
+        await updateCurrentFormStatus(formId, "none");
+      }
+    };
+
+    const appStateSubscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") resetForNewDay().catch((error) => {
+        reportDevelopmentError("Could not reset S-500 for the new day", error);
+      });
+    });
+    const midnightCheckInterval = setInterval(() => {
+      resetForNewDay().catch((error) => {
+        reportDevelopmentError("Could not reset S-500 for the new day", error);
+      });
+    }, 30 * 1000);
+
+    return () => {
+      appStateSubscription.remove();
+      clearInterval(midnightCheckInterval);
+    };
+  }, [activeJob, formProfile, profileHydrated]);
+
+  useEffect(() => {
+    if (!profileHydrated || !profileSetupComplete || !microsoftAuth.account?.id) {
+      return undefined;
+    }
+
+    const syncWhenActive = () => {
+      if (AppState.currentState === "active") refreshNotificationActivity();
+    };
+
+    syncWhenActive();
+    const appStateSubscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") refreshNotificationActivity();
+    });
+    const refreshInterval = setInterval(syncWhenActive, 45 * 1000);
+
+    return () => {
+      appStateSubscription.remove();
+      clearInterval(refreshInterval);
+    };
+  }, [
+    microsoftAuth.account?.id,
+    profileHydrated,
+    profileSetupComplete,
+    refreshNotificationActivity,
+  ]);
+
   const refreshWeatherManually = useCallback(
     () => fetchWeather({ forceRefresh: true, showRefreshing: true }),
     [fetchWeather],
@@ -794,7 +1002,7 @@ function AppContent() {
         nextPreference,
       );
     } catch (error) {
-      console.log("Could not save weather preference", error);
+      reportDevelopmentError("Could not save weather preference", error);
     }
   }, []);
 
@@ -834,15 +1042,50 @@ function AppContent() {
 
   const persistSE14Records = async (records) => {
     const sortedRecords = sortSE14Records(records);
+    const job = activeJob;
+    if (!job) throw new Error("Select a job before saving GNSS sessions.");
 
-    setSE14InProgress(sortedRecords);
-
+    // 1) Write to the phone first. If this fails it throws, and the screen
+    //    has not been changed, so it never shows data that isn't saved.
     await AsyncStorage.setItem(
-      jobStorageKey(SE14_IN_PROGRESS_KEY, activeJob),
+      jobStorageKey(SE14_IN_PROGRESS_KEY, job),
       JSON.stringify(sortedRecords),
     );
 
+    // 2) Only then update what's on screen - and only if we are still on the
+    //    same job (the user may have switched while the write was running).
+    if (activeJobRef.current?.number === job.number) {
+      se14InProgressRef.current = sortedRecords;
+      setSE14InProgress(sortedRecords);
+    }
+
     return sortedRecords;
+  };
+
+  const saveSE14DraftProgress = async ({ silent = false } = {}) => {
+    try {
+      const draft = normaliseSE14Form(se14);
+
+      await AsyncStorage.setItem(
+        jobStorageKey(SE14_DRAFT_KEY, activeJob),
+        JSON.stringify(draft),
+      );
+      await updateCurrentFormStatus("se14", "draft", {
+        date: draft.startDate,
+      });
+
+      if (!silent) {
+        Alert.alert(
+          "Progress saved",
+          "This Start Session remains a draft and can be continued from GNSS Static Sessions.",
+        );
+      }
+
+      return true;
+    } catch (error) {
+      Alert.alert("Save failed", String(error?.message || error));
+      return false;
+    }
   };
 
   const saveSE14AsInProgress = async () => {
@@ -907,7 +1150,10 @@ function AppContent() {
     }
   };
 
-  const saveActiveSE14Record = async ({ silent = false } = {}) => {
+  const saveActiveSE14Record = async ({
+    silent = false,
+    formOverride,
+  } = {}) => {
     try {
       const currentRecord = se14InProgress.find(
         (record) => record.id === activeSE14RecordId,
@@ -921,7 +1167,10 @@ function AppContent() {
         return false;
       }
 
-      const updatedRecord = updateSE14Record(currentRecord, se14);
+      const updatedRecord = updateSE14Record(
+        currentRecord,
+        formOverride || se14,
+      );
 
       await persistSE14Records(
         se14InProgress.map((record) =>
@@ -1006,51 +1255,188 @@ function AppContent() {
     return true;
   };
 
-  const startNewSE14 = async () => {
+  const startNewSE14 = async (roundMode = "current") => {
     setActiveSE14RecordId(null);
+
+    const prepareForm = (source) => {
+      const draft = roundMode === "next" ? emptySE14 : source;
+      const round = resolveSE14RoundAssignment({ records: se14InProgressRef.current, form: draft, roundMode });
+      return applyProfileDefaults(attachJob(applySE14RoundAssignment(draft, round), activeJob, "projectNumber"), formProfile, "se14", activeJob);
+    };
 
     try {
       const savedDraft = await AsyncStorage.getItem(
         jobStorageKey(SE14_DRAFT_KEY, activeJob),
       );
-
-      const draft = savedDraft
-        ? normaliseSE14Form(JSON.parse(savedDraft))
-        : emptySE14;
-
-      setSE14(
-        applyProfileDefaults(
-          attachJob(draft, activeJob, "projectNumber"),
-          formProfile,
-          "se14",
-          activeJob,
-        ),
-      );
+      setSE14(prepareForm(savedDraft ? normaliseSE14Form(JSON.parse(savedDraft)) : emptySE14));
     } catch (error) {
-      console.log("Could not load the SE-14 draft:", error);
-      setSE14(
-        applyProfileDefaults(
-          attachJob(emptySE14, activeJob, "projectNumber"),
-          formProfile,
-          "se14",
-          activeJob,
+      reportDevelopmentError("Could not load the SE-14 draft", error);
+      setSE14(prepareForm(emptySE14));
+    }
+  };
+
+  // Runs a change against ONE job's saved GNSS sessions, whichever job is open
+  // right now. A finished SharePoint upload can complete after the user has
+  // moved to a different job; its result must be saved against the job it
+  // belongs to, never against the records of the job now on screen.
+  const withSE14RecordsForJob = async (jobNumber, apply) => {
+    const same = (a, b) =>
+      String(a || "").trim().toUpperCase() === String(b || "").trim().toUpperCase();
+    const wanted = String(jobNumber || "").trim();
+
+    if (!wanted || same(wanted, activeJobRef.current?.number)) {
+      // The job on screen: use the live records and keep the screen in step.
+      return apply({
+        records: se14InProgressRef.current,
+        persistRecords: persistSE14Records,
+      });
+    }
+
+    // Another job: read, change and write ITS stored records only.
+    const target = jobs.find((item) => same(item.number, wanted));
+    if (!target) return false; // the job was deleted; nothing to update
+    const key = jobStorageKey(SE14_IN_PROGRESS_KEY, target);
+    const stored = await parseStoredJson(key, await AsyncStorage.getItem(key), []);
+    return apply({
+      records: sortSE14Records(
+        normaliseSE14Records(Array.isArray(stored) ? stored : []),
+      ),
+      persistRecords: async (next) => {
+        const sorted = sortSE14Records(next);
+        await AsyncStorage.setItem(key, JSON.stringify(sorted));
+        return sorted;
+      },
+    });
+  };
+
+  const archiveSE14Record = (
+    recordId,
+    { reason = "manual", silent = false, jobNumber = "" } = {},
+  ) => withSE14RecordsForJob(jobNumber, async ({ records, persistRecords }) => {
+    const currentRecord = records.find((record) => record.id === recordId);
+
+    if (!currentRecord) {
+      if (!silent) {
+        Alert.alert("Archive failed", "This GNSS session could not be found.");
+      }
+      return false;
+    }
+
+    const archivedRecord = archiveSE14RecordState(currentRecord, reason);
+
+    if (archivedRecord === currentRecord) {
+      return currentRecord.status === "archived";
+    }
+
+    try {
+      await persistRecords(
+        records.map((record) =>
+          record.id === recordId ? archivedRecord : record,
         ),
       );
+
+      if (!silent) {
+        Alert.alert(
+          "Session archived",
+          `${archivedRecord.name} is available in Archived Sessions.`,
+        );
+      }
+
+      return true;
+    } catch (error) {
+      if (!silent) {
+        Alert.alert("Archive failed", String(error?.message || error));
+      }
+      return false;
+    }
+  });
+
+  const saveSE14ForUploadDay = (pdf) => saveSE14ForUploadDayWithFeedback({
+    form: se14, pdf, recordId: activeSE14RecordId, records: se14InProgress,
+    persistRecords: persistSE14Records, updateFormStatus: updateCurrentFormStatus,
+    alert: Alert.alert,
+  });
+
+  const handleSE14PendingUpload = async (upload) => {
+    try {
+      if (upload?.source === "se14-day" && Array.isArray(upload?.recordIds)) {
+        await withSE14RecordsForJob(upload.jobNumber, ({ records, persistRecords }) =>
+          persistSE14UploadCompletion({
+            recordIds: upload.recordIds,
+            records,
+            persistRecords,
+          }),
+        );
+      } else if (upload?.source === "se14" && upload?.recordId) {
+        await archiveSE14Record(upload.recordId, {
+          reason: "sharepoint",
+          silent: true,
+          jobNumber: upload.jobNumber,
+        });
+      }
+    } catch (error) {
+      reportDevelopmentError("Could not update the GNSS upload status", error);
+    }
+  };
+
+  const restoreSE14Record = async (recordId) => {
+    const currentRecord = se14InProgress.find(
+      (record) => record.id === recordId,
+    );
+
+    if (!currentRecord) {
+      Alert.alert("Restore failed", "This GNSS session could not be found.");
+      return false;
+    }
+
+    const restoredRecord = restoreSE14RecordState(currentRecord);
+
+    if (restoredRecord === currentRecord) {
+      return currentRecord.status !== "archived";
+    }
+
+    try {
+      await persistSE14Records(
+        se14InProgress.map((record) =>
+          record.id === recordId ? restoredRecord : record,
+        ),
+      );
+      return true;
+    } catch (error) {
+      Alert.alert("Restore failed", String(error?.message || error));
+      return false;
     }
   };
 
   const deleteSE14Record = async (recordId) => {
+    const recordToDelete = se14InProgress.find(
+      (record) => record.id === recordId,
+    );
+
+    if (!recordToDelete || recordToDelete.status !== "archived") {
+      Alert.alert(
+        "Delete unavailable",
+        "Only an archived GNSS session can be permanently deleted.",
+      );
+      return false;
+    }
+
     try {
       await persistSE14Records(
         se14InProgress.filter((record) => record.id !== recordId),
       );
 
+      await deleteSE14FormPhotos(recordToDelete.data);
+
       if (activeSE14RecordId === recordId) {
         setActiveSE14RecordId(null);
         setSE14(emptySE14);
       }
+
+      return true;
     } catch (error) {
       Alert.alert("Delete failed", String(error?.message || error));
+      return false;
     }
   };
 
@@ -1123,7 +1509,7 @@ function AppContent() {
               try {
                 await updateCurrentFormStatus("se14", "none");
               } catch (statusError) {
-                console.log(
+                reportDevelopmentError(
                   "Could not reset the SE-14 form status:",
                   statusError,
                 );
@@ -1145,7 +1531,7 @@ function AppContent() {
   };
 
   const exportS500Pdf = async () => {
-    const result = await exportS500PdfFile(s500);
+    const result = await exportS500PdfFile(s500, profileInitials(formProfile));
     if (result?.exported) {
       await updateCurrentFormStatus("s500", "complete", { date: s500.date });
     }
@@ -1153,7 +1539,7 @@ function AppContent() {
   };
 
   const emailS500Pdf = async () => {
-    const result = await emailS500PdfFile(s500);
+    const result = await emailS500PdfFile(s500, profileInitials(formProfile));
     if (result?.exported) {
       await updateCurrentFormStatus("s500", "complete", { date: s500.date });
     }
@@ -1168,33 +1554,53 @@ function AppContent() {
       return { exported: false, issue: completionIssue };
     }
 
-    const result = await exportSE14PdfFile(se14, onPrepared);
+    const result = await exportSE14PdfFile(se14, onPrepared, profileInitials(formProfile));
 
     if (!result?.exported || !activeSE14RecordId) {
-      return;
+      return result;
     }
 
-    const completedAt = new Date().toISOString();
-    await updateCurrentFormStatus("se14", "complete", {
-      date: se14.startDate,
-      completedAt,
-    });
-
-    await persistSE14Records(
-      se14InProgress.map((record) =>
-        record.id === activeSE14RecordId
-          ? {
-              ...updateSE14Record(record, se14),
-              status: "complete",
-              completedAt,
-            }
-          : record,
-      ),
+    const exportedAt = new Date().toISOString();
+    const currentRecord = se14InProgress.find(
+      (record) => record.id === activeSE14RecordId,
     );
+
+    if (!currentRecord) return result;
+
+    const remainsArchived = currentRecord.status === "archived";
+    const completedAt = currentRecord.completedAt || exportedAt;
+
+    try {
+      await persistSE14Records(
+        se14InProgress.map((record) =>
+          record.id === activeSE14RecordId
+            ? {
+                ...updateSE14Record(record, se14),
+                status: remainsArchived ? "archived" : "complete",
+                completedAt,
+                lastExportedAt: exportedAt,
+              }
+            : record,
+        ),
+      );
+      // Mark the form complete only once the record is really saved.
+      await updateCurrentFormStatus("se14", "complete", {
+        date: se14.startDate,
+        completedAt,
+      });
+    } catch (error) {
+      Alert.alert(
+        "PDF exported, but not recorded",
+        `The PDF was created, but this session could not be marked complete on the phone: ${String(error?.message || error)}`,
+      );
+      return result;
+    }
 
     Alert.alert(
       "Record exported",
-      "The PDF was exported and this session is now marked complete. It remains available in Review & Complete for corrections or re-export.",
+      remainsArchived
+        ? "The PDF was exported and this session remains available in Archived Sessions."
+        : "The PDF was exported and this session is now marked complete. It remains available in Review & Complete until you archive it.",
     );
 
     onCompleted?.();
@@ -1239,6 +1645,74 @@ function AppContent() {
     setSE14InProgress([]);
     setFormStatuses({});
     setRecentlyOpened([]);
+    setNotificationUnreadCount(0);
+  };
+
+  const openNotification = async (notification, navigation) => {
+    const target = notification?.target;
+    if (target === "Jobs") {
+      navigation.popTo("Jobs");
+      return;
+    }
+
+    if (target === "FeedHome") {
+      navigation.navigate("FeedHome", {
+        channelKey: notification?.targetParams?.channelKey || "all",
+      });
+      return;
+    }
+
+    if (target === "JobChat") {
+      const targetNumber = String(
+        notification?.jobNumber || notification?.targetParams?.jobNumber || "",
+      ).trim().toUpperCase();
+      const targetJob = jobs.find(
+        (job) => String(job?.number || "").trim().toUpperCase() === targetNumber,
+      );
+
+      if (!targetJob) {
+        navigation.popTo("Jobs");
+        return;
+      }
+
+      if (String(activeJob?.number || "").trim().toUpperCase() !== targetNumber) {
+        await switchWorkspace(() => saveActiveJob(targetJob, jobs));
+      }
+      navigation.navigate("JobChat");
+      return;
+    }
+
+    if (["TodaysJob", "JobFiles", "KmlEditor"].includes(target)) {
+      const targetNumber = String(
+        notification?.jobNumber || notification?.targetParams?.jobNumber || "",
+      ).trim().toUpperCase();
+      const targetJob = targetNumber
+        ? jobs.find(
+          (job) => String(job?.number || "").trim().toUpperCase() === targetNumber,
+        )
+        : activeJob;
+
+      if (!targetJob) {
+        navigation.popTo("Jobs");
+        return;
+      }
+
+      const targetJobNumber = String(targetJob?.number || "").trim().toUpperCase();
+      if (String(activeJob?.number || "").trim().toUpperCase() !== targetJobNumber) {
+        await switchWorkspace(() => saveActiveJob(targetJob, jobs));
+      }
+
+      if (target === "KmlEditor") {
+        navigation.navigate("KmlEditor");
+        return;
+      }
+
+      openJobHubFromStack(
+        navigation,
+        target === "JobFiles" ? "files" : "workspace",
+        target === "TodaysJob" ? notification?.targetParams || {} : {},
+      );
+    }
   };
 
   if (showIntro) {
@@ -1330,10 +1804,7 @@ function AppContent() {
                 activeJob={activeJob}
                 selectJob={(job) => activateJob(job, navigation)}
                 addJob={async (values) => {
-                  const result = await createJob(values, jobs);
-                  setActiveJob(result.active);
-                  setJobs(result.jobs);
-                  await loadJobWorkspace(result.active);
+                  await switchWorkspace(() => createJob(values, jobs));
                   navigation.navigate("Dashboard");
                 }}
                 editJob={async (original, values) => {
@@ -1375,8 +1846,7 @@ function AppContent() {
                 profilePhotoRevision={microsoftAuth.profilePhotoRevision}
                 user={{
                   firstName: profile.firstName,
-                  initials:
-                    `${profile.firstName?.[0] || ""}${profile.lastName?.[0] || ""}`.toUpperCase(),
+                  initials: profileInitials(profile),
                   currentJob: activeJob || {
                     number: "No job selected",
                     name: "Choose a job to begin",
@@ -1391,9 +1861,12 @@ function AppContent() {
                   recordRecentlyOpened("account");
                   navigation.navigate("Account");
                 }}
-                openTodaysJob={() => navigation.navigate("TodaysJob")}
+                openTodaysJob={() => openJobHubFromStack(navigation, "workspace")}
                 openJobs={() => navigation.popTo("Jobs")}
                 continueWork={continueWork}
+                continueSectionTitle={dashboardWorkflow.sectionTitle}
+                preStartAction={dashboardWorkflow.preStartAction}
+                recommendedQuickAction={dashboardWorkflow.recommendedQuickAction}
                 openContinueWork={async () => {
                   if (!activeJob) {
                     navigation.popTo("Jobs");
@@ -1417,6 +1890,11 @@ function AppContent() {
                   if (continueWork?.type === "s506") {
                     recordRecentlyOpened("s506");
                     navigation.navigate("S506Form", { backLabel: "Dashboard" });
+                    return;
+                  }
+
+                  if (continueWork?.type === "workspace") {
+                    openJobHubFromStack(navigation, "workspace");
                     return;
                   }
 
@@ -1460,6 +1938,12 @@ function AppContent() {
                   recordRecentlyOpened("fieldTools");
                   navigation.navigate("FieldTools");
                 }}
+                openForms={() => activeJob
+                  ? openJobHubFromStack(navigation, "forms")
+                  : navigation.popTo("Jobs")}
+                openJobFiles={() => activeJob
+                  ? openJobHubFromStack(navigation, "files")
+                  : navigation.popTo("Jobs")}
                 openFeed={() => navigation.navigate("FeedHome")}
                 openChats={() => {
                   if (!activeJob) {
@@ -1468,6 +1952,8 @@ function AppContent() {
                   }
                   navigation.navigate("JobChat");
                 }}
+                openNotifications={() => navigation.navigate("Notifications")}
+                notificationCount={notificationUnreadCount}
                 openWeather={() => {
                   recordRecentlyOpened("weather");
                   navigation.navigate("Weather");
@@ -1478,14 +1964,26 @@ function AppContent() {
             )}
           </Stack.Screen>
 
-          <Stack.Screen name="FeedHome">
+          <Stack.Screen name="Notifications">
             {({ navigation }) => (
+              <NotificationsScreen
+                goBack={() => navigation.goBack()}
+                onUnreadCountChange={setNotificationUnreadCount}
+                onRefreshActivity={refreshNotificationActivity}
+                onOpenNotification={(notification) => openNotification(notification, navigation)}
+              />
+            )}
+          </Stack.Screen>
+
+          <Stack.Screen name="FeedHome">
+            {({ navigation, route }) => (
               <ChatHomeScreen
                 profile={formProfile}
                 account={microsoftAuth.account}
                 profilePhotoUri={microsoftAuth.profilePhotoUri}
                 profilePhotoRevision={microsoftAuth.profilePhotoRevision}
                 getAccessToken={microsoftAuth.getAccessToken}
+                initialFilter={route.params?.channelKey || "all"}
                 goBack={() => navigation.goBack()}
                 openProfile={() => navigation.navigate("Account")}
               />
@@ -1539,82 +2037,112 @@ function AppContent() {
             )}
           </Stack.Screen>
 
-          <Stack.Screen name="TodaysJob">
-            {({ navigation }) => (
-              <JobWorkspaceScreen
-                job={activeJob}
-                goBack={() => navigation.goBack()}
-                openForms={() => {
-                  setPlayHomeLanding(true);
-                  navigation.navigate("Home", { backLabel: "Job Workspace" });
-                }}
-                openJobFiles={() => navigation.navigate("JobFiles")}
-              />
-            )}
-          </Stack.Screen>
-
-          <Stack.Screen name="JobFiles">
-            {({ navigation }) => (
-              <JobFilesScreen
-                job={activeJob}
-                goBack={() => navigation.goBack()}
-                getAccessToken={microsoftAuth.getAccessToken}
-              />
-            )}
-          </Stack.Screen>
-
-          <Stack.Screen name="Account">
-            {({ navigation }) => (
-              <AccountScreen
-                profile={profile}
-                microsoftAccount={microsoftAuth.account}
-                profilePhotoUri={microsoftAuth.profilePhotoUri}
-                profilePhotoRevision={microsoftAuth.profilePhotoRevision}
-                profilePhotoLoading={microsoftAuth.profilePhotoLoading}
-                onRefreshProfilePhoto={() =>
-                  microsoftAuth.refreshProfilePhoto()
-                }
-                onMicrosoftSignOut={signOutMicrosoft}
-                goBack={() => navigation.goBack()}
-                onSave={async (next) => {
-                  const cleanProfile = migrateProfile({
-                    ...next,
-                    userId: microsoftAuth.account.id,
-                    identitySource: "microsoft",
-                    email: microsoftAuth.account.email || next.email,
-                    microsoftAccountId: microsoftAuth.account.id,
-                    microsoftDisplayName:
-                      microsoftAuth.account.displayName || "",
-                  });
-                  setProfile(cleanProfile);
-                  await saveAccountProfile(cleanProfile);
-                  setS500((current) => ({
-                    ...current,
-                    completedBy:
-                      current.completedBy ||
-                      `${cleanProfile.firstName} ${cleanProfile.lastName}`.trim(),
-                    jobNumber: current.jobNumber || cleanProfile.defaultJob,
-                  }));
-                  setSE14((current) => ({
-                    ...current,
-                    observer:
-                      current.observer ||
-                      `${cleanProfile.firstName} ${cleanProfile.lastName}`.trim(),
-                    projectNumber:
-                      current.projectNumber || cleanProfile.defaultJob,
-                  }));
-                }}
-              />
-            )}
-          </Stack.Screen>
-
-          <Stack.Screen name="Home">
+          <Stack.Screen
+            name="JobHub"
+            options={({ route }) => ({
+              gestureEnabled: true,
+              fullScreenGestureEnabled: false,
+              animation: "fade",
+            })}
+          >
             {({ navigation, route }) => (
-              <HomeScreen
+              <JobHubScreen
+                job={activeJob}
                 loading={loading}
-                playIntroLanding={playHomeLanding}
-                onIntroLandingComplete={() => {
-                  setPlayHomeLanding(false);
+                initialTab={route.params?.tab || "workspace"}
+                navigationRequestKey={route.params?.requestKey || ""}
+                pendingUpload={route.params?.pendingUpload || null}
+                formLabel={route.params?.formLabel || ""}
+                onPendingUploadHandled={handleSE14PendingUpload}
+                goDashboard={() => navigation.popTo("Dashboard")}
+                getAccessToken={microsoftAuth.getAccessToken}
+                onRecentlyOpened={recordRecentlyOpened}
+                updatedBy={
+                  microsoftAuth.account?.displayName
+                  || `${formProfile.firstName || ""} ${formProfile.lastName || ""}`.trim()
+                }
+                progressRefreshRequest={
+                  route.params?.focus === "progress"
+                    ? {
+                      requestId: route.params?.requestKey || `${Date.now()}`,
+                    }
+                    : null
+                }
+                progressFocusRequest={
+                  route.params?.focus === "progress"
+                    ? {
+                      requestId: route.params?.requestKey || `${Date.now()}`,
+                      eventId: route.params?.progressEventId || "",
+                      taskId: route.params?.progressTaskId || "",
+                      taskName: route.params?.progressTaskName || "",
+                      completed: route.params?.progressCompleted,
+                      target: route.params?.progressTarget,
+                      unit: route.params?.progressUnit || "",
+                      fromRatio: route.params?.progressFromRatio || 0,
+                    }
+                    : null
+                }
+                jobDetailsFocusRequest={
+                  route.params?.focus === "jobDetails"
+                    ? {
+                      requestId: route.params?.requestKey || `${Date.now()}`,
+                      sectionId: route.params?.jobDetailsSectionId || "",
+                    }
+                    : null
+                }
+                onProgressNotificationsAdded={async () => {
+                  setNotificationUnreadCount(await getUnreadNotificationCount());
+                }}
+                onBriefSaved={async (brief) => {
+                  if (!activeJob?.number) return;
+                  const nextJobs = await updateJob(
+                    activeJob.number,
+                    {
+                      fieldWorkType: brief.workType,
+                      fieldDetails: brief.details,
+                      fieldDetailsUpdatedAt: brief.updatedAt,
+                      fieldDetailsUpdatedBy: brief.updatedBy,
+                    },
+                    jobs,
+                  );
+                  const updated = nextJobs.find(
+                    (item) => item.number === activeJob.number,
+                  );
+                  if (!updated) return;
+                  const result = await saveActiveJob(updated, nextJobs);
+                  setActiveJob(result.active);
+                  setJobs(result.jobs);
+                }}
+                onUpdateJob={async (changes) => {
+                  if (!activeJob?.number) return;
+                  const nextJobs = await updateJob(
+                    activeJob.number,
+                    changes,
+                    jobs,
+                  );
+                  const updated = nextJobs.find(
+                    (item) => item.number === activeJob.number,
+                  );
+                  if (!updated) return;
+                  const result = await saveActiveJob(updated, nextJobs);
+                  setActiveJob(result.active);
+                  setJobs(result.jobs);
+                }}
+                openKml={() => navigation.navigate("KmlEditor")}
+                openTmrFeatureGuide={() => {
+                  recordRecentlyOpened("tmrFeatureGuide");
+                  setSelectedTmrFeature(null);
+                  navigation.navigate("TmrFeatureGuide", {
+                    backLabel: "Workspace",
+                  });
+                }}
+                openCapture={() => {
+                  recordRecentlyOpened("surveyPhoto");
+                  navigation.navigate("SurveyPhoto", {
+                    backLabel: "Workspace",
+                    initialTab: "capture",
+                    launchCameraAt: Date.now(),
+                  });
                 }}
                 openForm={(form) => {
                   if (form?.id === "se14") {
@@ -1642,8 +2170,78 @@ function AppContent() {
                     navigation.navigate("S506Form", { backLabel: "Forms" });
                   }
                 }}
-                goDashboard={() => navigation.goBack()}
-                backLabel={route.params?.backLabel || "Job Workspace"}
+              />
+            )}
+          </Stack.Screen>
+
+          <Stack.Screen
+            name="KmlEditor"
+            options={{
+              gestureEnabled: false,
+              fullScreenGestureEnabled: false,
+              animation: "slide_from_right",
+            }}
+          >
+            {({ navigation }) => (
+              <KmlEditorScreen
+                job={activeJob}
+                getAccessToken={microsoftAuth.getAccessToken}
+                goBack={() => navigation.goBack()}
+              />
+            )}
+          </Stack.Screen>
+
+          <Stack.Screen name="Account">
+            {({ navigation }) => (
+              <AccountScreen
+                profile={profile}
+                microsoftAccount={microsoftAuth.account}
+                profilePhotoUri={microsoftAuth.profilePhotoUri}
+                profilePhotoRevision={microsoftAuth.profilePhotoRevision}
+                profilePhotoLoading={microsoftAuth.profilePhotoLoading}
+                onRefreshProfilePhoto={() =>
+                  microsoftAuth.refreshProfilePhoto()
+                }
+                openDiagnostics={() => navigation.navigate("Diagnostics")}
+                onMicrosoftSignOut={signOutMicrosoft}
+                goBack={() => navigation.goBack()}
+                onSave={async (next) => {
+                  const cleanProfile = migrateProfile({
+                    ...next,
+                    userId: microsoftAuth.account.id,
+                    identitySource: "microsoft",
+                    email: microsoftAuth.account.email || next.email,
+                    microsoftAccountId: microsoftAuth.account.id,
+                    microsoftDisplayName:
+                      microsoftAuth.account.displayName || "",
+                  });
+                  const savedProfile = await saveAccountProfile(cleanProfile);
+                  setProfile(savedProfile);
+                  setS500((current) => applyProfileDefaults(
+                    current,
+                    savedProfile,
+                    "s500",
+                    activeJob,
+                  ));
+                  setSE14((current) => applyProfileDefaults(
+                    current,
+                    savedProfile,
+                    "se14",
+                    activeJob,
+                  ));
+                }}
+              />
+            )}
+          </Stack.Screen>
+
+          <Stack.Screen name="Diagnostics">
+            {({ navigation }) => (
+              <DiagnosticsScreen
+                profile={formProfile}
+                microsoftAccount={microsoftAuth.account}
+                activeJob={activeJob}
+                getAccessToken={microsoftAuth.getAccessToken}
+                goBack={() => navigation.goBack()}
               />
             )}
           </Stack.Screen>
@@ -1668,6 +2266,14 @@ function AppContent() {
                   navigation.navigate("Compass");
                 }}
                 openFeatureScanner={() => {
+                  if (!FEATURE_SCANNER_ENABLED) {
+                    Alert.alert(
+                      "Feature Scanner under development",
+                      "This tool is temporarily locked while we build and test the Meshroom 3D processing workflow. It will return when the complete scan pipeline is ready.",
+                      [{ text: "OK" }],
+                    );
+                    return;
+                  }
                   navigation.navigate("FeatureScanner");
                 }}
               />
@@ -1677,8 +2283,8 @@ function AppContent() {
           <Stack.Screen name="FeatureScanner">
             {({ navigation }) => (
               <FeatureScannerScreen
-                activeJob={activeJob}
-                accountProfile={formProfile}
+                activeJob={activeJob} accountProfile={formProfile}
+                getAccessToken={microsoftAuth.getAccessToken}
                 goBack={() => navigation.goBack()}
               />
             )}
@@ -1700,6 +2306,7 @@ function AppContent() {
                 launchCameraAt={route.params?.launchCameraAt}
                 backLabel={route.params?.backLabel || "Dashboard"}
                 goBack={() => navigation.goBack()}
+                getAccessToken={microsoftAuth.getAccessToken}
               />
             )}
           </Stack.Screen>
@@ -1713,6 +2320,7 @@ function AppContent() {
                 clearS500={clearS500}
                 exportS500Pdf={exportS500Pdf}
                 emailS500Pdf={emailS500Pdf}
+                onFormStatusChange={updateCurrentFormStatus}
                 accountProfile={formProfile}
                 activeJob={activeJob}
                 backLabel={route.params?.backLabel || "Forms"}
@@ -1724,8 +2332,16 @@ function AppContent() {
 
                   if (targetScreen === "s500RiskGuide") {
                     navigation.navigate("S500RiskGuide");
+                    return;
+                  }
+
+                  if (targetScreen === "jobFiles") {
+                    openJobHubFromStack(navigation, "files");
                   }
                 }}
+                openJobFiles={(payload = {}) => (
+                  openJobHubFromStack(navigation, "files", payload)
+                )}
                 openCameraCompare={(feature) => {
                   setSelectedTmrFeature(feature);
                   navigation.navigate("TmrFeatureCamera", {
@@ -1750,6 +2366,9 @@ function AppContent() {
                 backLabel={route.params?.backLabel || "Forms"}
                 goBack={() => navigation.goBack()}
                 onFormStatusChange={updateCurrentFormStatus}
+                openJobFiles={(payload = {}) => (
+                  openJobHubFromStack(navigation, "files", payload)
+                )}
               />
             )}
           </Stack.Screen>
@@ -1762,6 +2381,9 @@ function AppContent() {
                 backLabel={route.params?.backLabel || "Forms"}
                 goBack={() => navigation.goBack()}
                 onFormStatusChange={updateCurrentFormStatus}
+                openJobFiles={(payload = {}) => (
+                  openJobHubFromStack(navigation, "files", payload)
+                )}
               />
             )}
           </Stack.Screen>
@@ -1784,6 +2406,8 @@ function AppContent() {
               <SE14FormScreen
                 se14={se14}
                 setSE14={setSE14}
+                recordId={activeSE14RecordId}
+                saveSE14DraftProgress={saveSE14DraftProgress}
                 saveSE14AsInProgress={async () => {
                   const saved = await saveSE14AsInProgress();
 
@@ -1803,6 +2427,7 @@ function AppContent() {
                   return saved;
                 }}
                 saveActiveSE14Record={saveActiveSE14Record}
+                saveSE14ForUploadDay={saveSE14ForUploadDay}
                 completeSE14FieldSession={async () => {
                   const completed = await completeSE14FieldSession();
                   if (completed) navigation.goBack();
@@ -1823,14 +2448,22 @@ function AppContent() {
                 accountProfile={formProfile}
                 activeJob={activeJob}
                 backLabel="GNSS Sessions"
-                setScreen={(targetScreen) => {
+                setScreen={async (targetScreen) => {
                   if (targetScreen === "formMenu") {
+                    if (activeSE14RecordId) {
+                      await saveActiveSE14Record({ silent: true });
+                    }
                     navigation.goBack();
                     return;
                   }
 
                   if (targetScreen === "se14MeasurementGuide") {
                     navigation.navigate("SE14MeasurementGuide");
+                    return;
+                  }
+
+                  if (targetScreen === "jobFiles") {
+                    openJobHubFromStack(navigation, "files");
                     return;
                   }
 
@@ -1847,8 +2480,9 @@ function AppContent() {
               <SE14InProgressScreen
                 records={se14InProgress}
                 activeJob={activeJob}
-                startSession={async () => {
-                  await startNewSE14();
+                accountProfile={formProfile}
+                startSession={async ({ roundMode = "current" } = {}) => {
+                  await startNewSE14(roundMode);
                   navigation.navigate("SE14Form", {
                     backLabel: "GNSS Sessions",
                   });
@@ -1860,7 +2494,13 @@ function AppContent() {
                     });
                   }
                 }}
+                archiveRecord={archiveSE14Record}
+                restoreRecord={restoreSE14Record}
                 deleteRecord={deleteSE14Record}
+                editSessionNumbers={(options) => saveSE14BulkSessionNumberEdit({ ...options, records: se14InProgressRef.current, persistRecords: persistSE14Records, alert: Alert.alert })}
+                uploadDay={(payload = {}) => openJobHubFromStack(navigation, "files", {
+                  formLabel: `${payload.folderName || "GNSS day"} · ${payload.assets?.length || 0} PDFs`, pendingUpload: payload,
+                })}
                 backLabel={route.params?.backLabel || "Forms"}
                 goBack={() => navigation.goBack()}
               />
@@ -1881,7 +2521,7 @@ function AppContent() {
           </Stack.Screen>
 
           <Stack.Screen name="TmrFeatureGuide">
-            {({ navigation }) => (
+            {({ navigation, route }) => (
               <TmrFeatureGuideScreen
                 currentJob={{
                   number: profile.defaultJob || "No job selected",
@@ -1894,6 +2534,7 @@ function AppContent() {
                     navigation.goBack();
                   }
                 }}
+                backLabel={route.params?.backLabel || "Field Tools"}
                 openFeatureDetails={(feature) => {
                   setSelectedTmrFeature(feature);
 
@@ -1970,7 +2611,10 @@ function AppContent() {
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AppContent />
+      <View style={{ flex: 1 }}>
+        <AppContent />
+        <AppPrivacyShield />
+      </View>
     </SafeAreaProvider>
   );
 }

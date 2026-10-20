@@ -36,6 +36,9 @@ export default function PhotoMoreView({
       style={styles.body}
       contentContainerStyle={styles.moreContent}
       showsVerticalScrollIndicator={false}
+      bounces={false}
+      alwaysBounceVertical={false}
+      overScrollMode="never"
     >
       <Text style={styles.moreEyebrow}>PROJECT CONTROLS</Text>
       <Text style={styles.moreTitle}>Workspace</Text>

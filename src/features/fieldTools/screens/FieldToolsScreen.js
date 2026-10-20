@@ -9,11 +9,10 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AppActionCard from '../../../components/AppActionCard';
-import AppCard from '../../../components/AppCard';
 import AppHeader from '../../../components/AppHeader';
-import AppSectionHeader from '../../../components/AppSectionHeader';
+import { FEATURE_SCANNER_ENABLED } from '../../../config/featureFlags';
 import { useTheme } from '../../../theme/ThemeContext';
-import { RADIUS, SPACING } from '../../../theme/spacing';
+import { SPACING } from '../../../theme/spacing';
 
 const TOOLS = [
   {
@@ -48,12 +47,14 @@ const TOOLS = [
   },
   {
     id: 'scanner',
-    icon: '◈',
+    icon: FEATURE_SCANNER_ENABLED ? '◈' : '🔒',
     eyebrow: '3D CAPTURE',
-    title: '3D Feature Scanner',
-    subtitle: 'Create a textured 3D model of pits, structures and site features.',
-    status: 'LIDAR · NATIVE',
-    statusTone: 'accent',
+    title: 'Feature Scanner',
+    subtitle: FEATURE_SCANNER_ENABLED
+      ? 'Move around a feature, inspect captured viewpoints, zoom, spin and measure.'
+      : 'Temporarily locked while the Meshroom 3D processing workflow is being built and tested.',
+    status: FEATURE_SCANNER_ENABLED ? 'AUTO CAPTURE · LIDAR' : 'UNDER DEVELOPMENT',
+    statusTone: FEATURE_SCANNER_ENABLED ? 'accent' : 'warning',
     action: 'openFeatureScanner',
   },
 ];
@@ -86,32 +87,21 @@ export default function FieldToolsScreen({
         backLabel="Dashboard"
         showTopo
         compact
+        centred
+        backOnly
+        backCompact
       />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         contentContainerStyle={[
           styles.content,
           { paddingBottom: insets.bottom + SPACING.xxxl },
         ]}
       >
-        <AppCard style={styles.introCard} padding="compact">
-          <View style={styles.introIcon}>
-            <Text style={styles.introIconText}>ONE</Text>
-          </View>
-          <View style={styles.introCopy}>
-            <Text style={styles.introTitle}>Choose the tool for the task</Text>
-            <Text style={styles.introText}>
-              Each tool keeps the active job context and returns you to this workspace.
-            </Text>
-          </View>
-        </AppCard>
-
-        <AppSectionHeader
-          title="Available tools"
-          subtitle="Designed for fast use on site."
-        />
-
         {TOOLS.map((tool) => (
           <AppActionCard
             key={tool.id}
@@ -137,41 +127,5 @@ const createStyles = (colors) => StyleSheet.create({
   content: {
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.lg,
-  },
-  introCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: SPACING.xl,
-    borderColor: colors.divider,
-    backgroundColor: colors.warningBackground,
-  },
-  introIcon: {
-    width: 45,
-    height: 45,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: SPACING.md,
-    borderRadius: RADIUS.md,
-    backgroundColor: colors.navy,
-  },
-  introIconText: {
-    color: colors.accent,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1.2,
-  },
-  introCopy: {
-    flex: 1,
-  },
-  introTitle: {
-    color: colors.bodyText,
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  introText: {
-    color: colors.supportingText,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 3,
   },
 });

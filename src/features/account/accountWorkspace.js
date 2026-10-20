@@ -1,41 +1,26 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import {
+  accountDirectoryName,
+  accountStorageKey,
+  getActiveAccountId,
+} from '../../services/account/accountIdentity';
 
-let activeAccountId = '';
+export {
+  accountDirectoryName,
+  accountStorageKey,
+  clearActiveAccountId,
+  getActiveAccountId,
+  setActiveAccountId,
+} from '../../services/account/accountIdentity';
 
 const LEGACY_WORKSPACE_OWNER_KEY = 'northgroup_legacy_workspace_owner_v1';
 const ACCOUNT_MIGRATION_KEY = 'northgroup_account_workspace_migration_v1';
 
-const cleanSegment = (value) =>
-  String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '_');
-
-export const setActiveAccountId = (userId) => {
-  activeAccountId = cleanSegment(userId);
-  return activeAccountId;
-};
-
-export const clearActiveAccountId = () => {
-  activeAccountId = '';
-};
-
-export const getActiveAccountId = () => activeAccountId;
-
-export const accountStorageKey = (base) => {
-  if (!activeAccountId) {
-    throw new Error('Complete profile setup before accessing account data.');
-  }
-  return `${base}__account_${activeAccountId}`;
-};
-
-export const accountDirectoryName = () => {
-  if (!activeAccountId) {
-    throw new Error('Complete profile setup before accessing account files.');
-  }
-  return `Accounts/${activeAccountId}/`;
-};
+const cleanSegment = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9_-]/g, '_');
 
 const accountMigrationKey = () => accountStorageKey(ACCOUNT_MIGRATION_KEY);
 

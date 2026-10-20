@@ -1,12 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
-  Image,
   ImageBackground,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -19,12 +19,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 
+import NorthGroupBrandButton from '../../../components/NorthGroupBrandButton';
+
 const NAVY = '#061A2D';
 const NAVY2 = '#09233C';
 const GOLD = '#D6A84F';
 const LOCATION_SEARCH_DEBOUNCE_MS = 350;
 const LOCATION_SEARCH_MIN_CHARS = 2;
-const INACTIVE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 const MESSAGES = [
   "G'DAY, MATE",
   "LET'S GET IT",
@@ -80,17 +81,20 @@ export default function JobsScreen({
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
   const [teamsRefreshing, setTeamsRefreshing] = useState(false);
   const [teamsMessage, setTeamsMessage] = useState('');
-  const [inactiveOpen, setInactiveOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const entrance = useRef(new Animated.Value(0)).current;
+  const editorSheetY = useRef(new Animated.Value(0)).current;
   const locationRequestId = useRef(0);
 
-  const inactiveCutoff = Date.now() - INACTIVE_AFTER_MS;
   const otherJobs = jobs.filter((job) => job.number !== activeJob?.number);
-  const inactiveJobs = otherJobs.filter((job) => {
-    const lastAccessed = Date.parse(job.lastOpenedAt || job.createdAt || '');
-    return Number.isFinite(lastAccessed) && lastAccessed < inactiveCutoff;
-  });
-  const existingJobs = otherJobs.filter((job) => !inactiveJobs.includes(job));
+  const archivedJobs = otherJobs.filter((job) => job.isArchived);
+  const existingJobs = otherJobs.filter((job) => !job.isArchived);
+  const completedArchivedCount = archivedJobs.filter((job) => job.archiveReason === 'completed').length;
+  const inactiveArchivedCount = archivedJobs.filter((job) => job.archiveReason === 'inactive').length;
+  const archivedSummary = [
+    completedArchivedCount ? `${completedArchivedCount} completed` : '',
+    inactiveArchivedCount ? `${inactiveArchivedCount} inactive` : '',
+  ].filter(Boolean).join(' · ') || 'Completed or inactive';
 
   const replayEntrance = useCallback(() => {
     setGreeting(nextMessage());
@@ -116,7 +120,7 @@ export default function JobsScreen({
       const count = await refreshTeamsJobs();
       setTeamsMessage(count
         ? `${count} assigned ${count === 1 ? 'job' : 'jobs'} refreshed from Teams.`
-        : 'No published Teams shifts matched the job number + location rule.');
+        : 'No new published Teams shifts found. Completed jobs were checked and archived below.');
     } catch (syncError) {
       setTeamsMessage(syncError?.status === 403
         ? 'Teams access needs Microsoft administrator approval.'
@@ -125,6 +129,19 @@ export default function JobsScreen({
       setTeamsRefreshing(false);
     }
   }, [microsoftConnected, refreshTeamsJobs, teamsRefreshing]);
+
+  const refreshJobsPage = useCallback(() => {
+    replayEntrance();
+    if (microsoftConnected && refreshTeamsJobs && !teamsRefreshing) {
+      syncTeams(false);
+    }
+  }, [
+    microsoftConnected,
+    refreshTeamsJobs,
+    replayEntrance,
+    syncTeams,
+    teamsRefreshing,
+  ]);
 
   const initialTeamsSync = useRef(false);
   useEffect(() => {
@@ -204,13 +221,50 @@ export default function JobsScreen({
     setEditor({ mode: 'edit', job });
   };
 
-  const closeEditor = () => {
+  const closeEditor = useCallback(() => {
     setEditor(null);
     setError('');
     setSelectedLocation(null);
     setLocationSuggestions([]);
+    editorSheetY.setValue(0);
     Keyboard.dismiss();
-  };
+  }, [editorSheetY]);
+
+  const editorPanResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_event, gesture) => (
+      gesture.dy > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx)
+    ),
+    onPanResponderMove: (_event, gesture) => {
+      editorSheetY.setValue(Math.max(0, gesture.dy));
+    },
+    onPanResponderRelease: (_event, gesture) => {
+      if (gesture.dy > 80 || gesture.vy > 1.05) {
+        Animated.timing(editorSheetY, {
+          toValue: 420,
+          duration: 180,
+          useNativeDriver: true,
+        }).start(closeEditor);
+        return;
+      }
+      Animated.spring(editorSheetY, {
+        toValue: 0,
+        damping: 22,
+        stiffness: 240,
+        mass: 0.8,
+        useNativeDriver: true,
+      }).start();
+    },
+    onPanResponderTerminate: () => {
+      Animated.spring(editorSheetY, {
+        toValue: 0,
+        useNativeDriver: true,
+      }).start();
+    },
+  }), [closeEditor, editorSheetY]);
+
+  useEffect(() => {
+    if (editor) editorSheetY.setValue(0);
+  }, [editor, editorSheetY]);
 
   const chooseLocation = (suggestion) => {
     setDraft((current) => ({ ...current, location: suggestion.label }));
@@ -286,38 +340,35 @@ export default function JobsScreen({
           },
         ]}
       >
-        <Pressable
-          onPress={replayEntrance}
-          accessibilityRole="button"
-          accessibilityLabel="Replay the Choose your job introduction"
-        >
-          <View style={styles.brandRow}>
-            <Image
-              source={require('../../../../assets/logo-transparent.png')}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-            <View>
-              <Text style={styles.brand}>NORTHGROUP</Text>
-              <Text style={styles.one}>ONE</Text>
-            </View>
-          </View>
+        <NorthGroupBrandButton
+          onPress={refreshJobsPage}
+          accessibilityLabel="Refresh Choose your job"
+          accessibilityHint="Refreshes assigned jobs and replays the page introduction"
+        />
 
-          <View style={styles.hero}>
-            <Text style={styles.greeting}>{greeting}</Text>
-            <Text style={styles.heading}>Choose your job</Text>
-            <Text style={styles.sub}>One job. One workspace. Everything exactly where it belongs.</Text>
-          </View>
-        </Pressable>
+        <View style={styles.hero}>
+          <Text style={styles.greeting}>{greeting}</Text>
+          <Text style={styles.heading}>Choose your job</Text>
+          <Text style={styles.sub}>One job. One workspace. Everything exactly where it belongs.</Text>
+        </View>
 
         <ScrollView
           showsVerticalScrollIndicator={false}
+          bounces={false}
+          alwaysBounceVertical={false}
+          overScrollMode="never"
           contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
         >
           {activeJob?.number ? (
             <>
               <Text style={styles.label}>CURRENT JOB</Text>
-              <View style={styles.active}>
+              <Pressable
+                style={({ pressed }) => [styles.active, pressed && styles.activePressed]}
+                onPress={openDashboard}
+                accessibilityRole="button"
+                accessibilityLabel={`Open job ${activeJob.number}`}
+                accessibilityHint="Opens the active job dashboard"
+              >
                 <View style={styles.activeTop}>
                   <View style={styles.liveDot} />
                   <Text style={styles.live}>ACTIVE WORKSPACE</Text>
@@ -325,17 +376,24 @@ export default function JobsScreen({
                 <Text style={styles.number}>{activeJob.number}</Text>
                 <Text style={styles.name}>{activeJob.name}</Text>
                 {String(activeJob.source || '').includes('teams-shifts') ? <Text style={styles.teamsBadge}>TEAMS SHIFT</Text> : null}
+                {activeJob.isArchived ? <Text style={styles.archivedBadge}>COMPLETED · ARCHIVED</Text> : null}
                 {activeJob.location ? <Text style={styles.location}>⌖  {activeJob.location}</Text> : null}
                 <View style={styles.activeActions}>
-                  <Pressable style={styles.activeActionButton} onPress={() => openEdit(activeJob)}>
+                  <Pressable
+                    style={styles.activeActionButton}
+                    onPress={(event) => {
+                      event.stopPropagation();
+                      openEdit(activeJob);
+                    }}
+                  >
                     <Text style={styles.activeActionText}>EDIT DETAILS</Text>
                   </Pressable>
                 </View>
-                <Pressable style={styles.activeFooter} onPress={openDashboard}>
+                <View style={styles.activeFooter}>
                   <Text style={styles.continueText}>CONTINUE TO DASHBOARD</Text>
                   <Text style={styles.continueArrow}>›</Text>
-                </Pressable>
-              </View>
+                </View>
+              </Pressable>
             </>
           ) : null}
 
@@ -365,31 +423,35 @@ export default function JobsScreen({
             </View>
           ) : null}
 
-          <View style={styles.sectionRow}>
-            <Text style={styles.label}>EXISTING JOBS</Text>
-          </View>
-
-          {existingJobs.map((job) => (
-            <View key={job.number} style={styles.job}>
-              <Pressable style={styles.jobOpen} onPress={() => selectJob(job)}>
-                <Text style={styles.jobNumber}>{job.number}</Text>
-                <Text style={styles.jobName}>{job.name}</Text>
-                {String(job.source || '').includes('teams-shifts') ? <Text style={styles.listTeamsBadge}>TEAMS</Text> : null}
-                <Text style={styles.jobLocation}>⌖  {job.location || 'Location not added'}</Text>
-              </Pressable>
-              <View style={styles.jobActions}>
-                <Pressable style={styles.iconButton} onPress={() => openEdit(job)}>
-                  <Text style={styles.iconText}>EDIT</Text>
-                </Pressable>
-                <Pressable style={[styles.iconButton, styles.deleteButton]} onPress={() => confirmDelete(job)}>
-                  <Text style={styles.deleteText}>DELETE</Text>
-                </Pressable>
-                <Pressable onPress={() => selectJob(job)}>
-                  <Text style={styles.arrow}>›</Text>
-                </Pressable>
+          {existingJobs.length ? (
+            <>
+              <View style={styles.sectionRow}>
+                <Text style={styles.label}>ACTIVE &amp; UPCOMING JOBS</Text>
               </View>
-            </View>
-          ))}
+
+              {existingJobs.map((job) => (
+                <View key={job.number} style={styles.job}>
+                  <Pressable style={styles.jobOpen} onPress={() => selectJob(job)}>
+                    <Text style={styles.jobNumber}>{job.number}</Text>
+                    <Text style={styles.jobName}>{job.name}</Text>
+                    {String(job.source || '').includes('teams-shifts') ? <Text style={styles.listTeamsBadge}>TEAMS</Text> : null}
+                    {job.location ? <Text style={styles.jobLocation}>⌖  {job.location}</Text> : null}
+                  </Pressable>
+                  <View style={styles.jobActions}>
+                    <Pressable style={styles.iconButton} onPress={() => openEdit(job)}>
+                      <Text style={styles.iconText}>EDIT</Text>
+                    </Pressable>
+                    <Pressable style={[styles.iconButton, styles.deleteButton]} onPress={() => confirmDelete(job)}>
+                      <Text style={styles.deleteText}>DELETE</Text>
+                    </Pressable>
+                    <Pressable onPress={() => selectJob(job)}>
+                      <Text style={styles.arrow}>›</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+            </>
+          ) : null}
 
           {activeJob?.number && !otherJobs.length ? (
             <View style={styles.noExisting}>
@@ -397,33 +459,39 @@ export default function JobsScreen({
             </View>
           ) : null}
 
-          {inactiveJobs.length ? (
-            <View style={styles.inactiveSection}>
+          {archivedJobs.length ? (
+            <View style={styles.archivedSection}>
               <Pressable
-                style={({ pressed }) => [styles.inactiveFolder, pressed && styles.pressed]}
-                onPress={() => setInactiveOpen((current) => !current)}
+                style={({ pressed }) => [styles.archivedFolder, pressed && styles.pressed]}
+                onPress={() => setArchivedOpen((current) => !current)}
                 accessibilityRole="button"
-                accessibilityLabel={`${inactiveOpen ? 'Close' : 'Open'} inactive jobs`}
+                accessibilityLabel={`${archivedOpen ? 'Close' : 'Open'} archived jobs`}
               >
-                <View style={styles.inactiveFolderIcon}>
-                  <Text style={styles.inactiveFolderIconText}>▰</Text>
+                <View style={styles.archivedFolderIcon}>
+                  <Text style={styles.archivedFolderIconText}>▰</Text>
                 </View>
-                <View style={styles.inactiveFolderCopy}>
-                  <Text style={styles.inactiveFolderTitle}>Inactive Jobs</Text>
-                  <Text style={styles.inactiveFolderSub}>
-                    Not accessed in the last 30 days · {inactiveJobs.length} {inactiveJobs.length === 1 ? 'job' : 'jobs'}
+                <View style={styles.archivedFolderCopy}>
+                  <Text style={styles.archivedFolderTitle}>Archived Jobs</Text>
+                  <Text style={styles.archivedFolderSub}>
+                    {archivedSummary} · {archivedJobs.length} {archivedJobs.length === 1 ? 'job' : 'jobs'}
                   </Text>
                 </View>
-                <Text style={styles.inactiveChevron}>{inactiveOpen ? '⌃' : '⌄'}</Text>
+                <Text style={styles.archivedChevron}>{archivedOpen ? '⌃' : '⌄'}</Text>
               </Pressable>
 
-              {inactiveOpen ? inactiveJobs.map((job) => (
-                <View key={job.number} style={[styles.job, styles.inactiveJob]}>
+              {archivedOpen ? archivedJobs.map((job) => (
+                <View key={job.number} style={[styles.job, styles.archivedJob]}>
                   <Pressable style={styles.jobOpen} onPress={() => selectJob(job)}>
                     <Text style={styles.jobNumber}>{job.number}</Text>
                     <Text style={styles.jobName}>{job.name}</Text>
                     {String(job.source || '').includes('teams-shifts') ? <Text style={styles.listTeamsBadge}>TEAMS</Text> : null}
-                    <Text style={styles.jobLocation}>⌖  {job.location || 'Location not added'}</Text>
+                    <Text style={[
+                      styles.archiveStatus,
+                      job.archiveReason === 'completed' ? styles.completedStatus : styles.inactiveStatus,
+                    ]}>
+                      {job.archiveReason === 'completed' ? 'COMPLETED' : 'INACTIVE'}
+                    </Text>
+                    {job.location ? <Text style={styles.jobLocation}>⌖  {job.location}</Text> : null}
                   </Pressable>
                   <View style={styles.jobActions}>
                     <Pressable style={styles.iconButton} onPress={() => openEdit(job)}>
@@ -459,18 +527,26 @@ export default function JobsScreen({
           style={styles.keyboardAvoider}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
-          <Pressable
+          <View
             style={[styles.shade, editor?.mode === 'edit' && styles.shadeTop]}
-            onPress={Keyboard.dismiss}
           >
-            <View
+            <Pressable
+              style={styles.modalBackdrop}
+              onPress={closeEditor}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel job editor"
+            />
+            <Animated.View
               style={[
                 styles.sheet,
                 editor?.mode === 'edit' && styles.sheetTop,
                 { paddingBottom: insets.bottom + 22 },
+                { transform: [{ translateY: editorSheetY }] },
               ]}
             >
-              <View style={styles.sheetHandle} />
+              <View style={styles.sheetDragArea} {...editorPanResponder.panHandlers}>
+                <View style={styles.sheetHandle} />
+              </View>
               <Text style={styles.sheetEyebrow}>
                 {editor?.mode === 'edit' ? 'UPDATE WORKSPACE' : 'NEW WORKSPACE'}
               </Text>
@@ -531,8 +607,8 @@ export default function JobsScreen({
               <Pressable onPress={closeEditor}>
                 <Text style={styles.cancel}>Cancel</Text>
               </Pressable>
-            </View>
-          </Pressable>
+            </Animated.View>
+          </View>
         </KeyboardAvoidingView>
       </Modal>
     </ImageBackground>
@@ -544,16 +620,13 @@ const styles = StyleSheet.create({
   background: { opacity: 0.55 },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(3,20,34,.68)' },
   shell: { flex: 1, paddingHorizontal: 20 },
-  brandRow: { height: 46, flexDirection: 'row', alignItems: 'center' },
-  logo: { width: 42, height: 42, marginRight: 8 },
-  brand: { color: '#FFF', fontSize: 12, fontWeight: '900', letterSpacing: 1.8 },
-  one: { color: GOLD, fontSize: 9, fontWeight: '900', letterSpacing: 3 },
   hero: { paddingTop: 26, paddingBottom: 26 },
   greeting: { color: GOLD, fontSize: 11, fontWeight: '900', letterSpacing: 2.2 },
   heading: { color: '#FFF', fontSize: 33, fontWeight: '900', letterSpacing: -0.7, marginTop: 7 },
   sub: { color: 'rgba(255,255,255,.7)', fontSize: 14, lineHeight: 20, marginTop: 6, maxWidth: 330 },
   label: { color: 'rgba(255,255,255,.55)', fontSize: 9, fontWeight: '900', letterSpacing: 1.8, marginBottom: 10 },
   active: { backgroundColor: 'rgba(8,35,58,.94)', borderRadius: 22, padding: 19, marginBottom: 4, borderWidth: 1, borderColor: GOLD, shadowColor: '#000', shadowOpacity: 0.28, shadowRadius: 14, shadowOffset: { width: 0, height: 8 } },
+  activePressed: { transform: [{ scale: 0.992 }], opacity: 0.92 },
   pressed: { opacity: 0.84, transform: [{ scale: 0.99 }] },
   activeTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#45C878', marginRight: 7 },
@@ -565,6 +638,7 @@ const styles = StyleSheet.create({
   activeActionButton: { borderWidth: 1, borderColor: 'rgba(255,255,255,.2)', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 7 },
   activeActionText: { color: '#FFF', fontSize: 8, fontWeight: '900' },
   teamsBadge: { alignSelf: 'flex-start', color: NAVY, backgroundColor: GOLD, borderRadius: 5, overflow: 'hidden', paddingHorizontal: 7, paddingVertical: 4, fontSize: 7, fontWeight: '900', letterSpacing: 0.8, marginTop: 9 },
+  archivedBadge: { alignSelf: 'flex-start', color: NAVY, backgroundColor: '#E7D39F', borderRadius: 5, overflow: 'hidden', paddingHorizontal: 7, paddingVertical: 4, fontSize: 7, fontWeight: '900', letterSpacing: 0.8, marginTop: 9 },
   activeFooter: { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,.12)', marginTop: 13, paddingTop: 13, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   continueText: { color: GOLD, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   continueArrow: { color: GOLD, fontSize: 24 },
@@ -590,15 +664,18 @@ const styles = StyleSheet.create({
   arrow: { color: GOLD, fontSize: 27, paddingLeft: 2 },
   noExisting: { alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,.14)', borderRadius: 15, paddingVertical: 17, marginBottom: 10 },
   noExistingText: { color: 'rgba(255,255,255,.58)', fontSize: 12 },
-  inactiveSection: { marginTop: 8, marginBottom: 10 },
-  inactiveFolder: { minHeight: 72, borderRadius: 17, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)', backgroundColor: 'rgba(5,28,47,.78)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginBottom: 10 },
-  inactiveFolderIcon: { width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(214,168,79,.16)', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
-  inactiveFolderIconText: { color: GOLD, fontSize: 19, transform: [{ rotate: '180deg' }] },
-  inactiveFolderCopy: { flex: 1 },
-  inactiveFolderTitle: { color: '#FFF', fontSize: 14, fontWeight: '900' },
-  inactiveFolderSub: { color: 'rgba(255,255,255,.58)', fontSize: 10, lineHeight: 14, marginTop: 3 },
-  inactiveChevron: { color: GOLD, fontSize: 20, marginLeft: 10 },
-  inactiveJob: { opacity: 0.9, marginLeft: 8, width: 'auto' },
+  archivedSection: { marginTop: 8, marginBottom: 10 },
+  archivedFolder: { minHeight: 72, borderRadius: 17, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)', backgroundColor: 'rgba(5,28,47,.78)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginBottom: 10 },
+  archivedFolderIcon: { width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(214,168,79,.16)', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  archivedFolderIconText: { color: GOLD, fontSize: 19, transform: [{ rotate: '180deg' }] },
+  archivedFolderCopy: { flex: 1 },
+  archivedFolderTitle: { color: '#FFF', fontSize: 14, fontWeight: '900' },
+  archivedFolderSub: { color: 'rgba(255,255,255,.58)', fontSize: 10, lineHeight: 14, marginTop: 3 },
+  archivedChevron: { color: GOLD, fontSize: 20, marginLeft: 10 },
+  archivedJob: { opacity: 0.9, marginLeft: 8, width: 'auto' },
+  archiveStatus: { alignSelf: 'flex-start', borderRadius: 5, overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 3, fontSize: 7, fontWeight: '900', letterSpacing: 0.7, marginTop: 6 },
+  completedStatus: { color: '#477A59', backgroundColor: '#E3F2E7' },
+  inactiveStatus: { color: '#68757D', backgroundColor: '#E8EDF0' },
   empty: { alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,.16)', borderRadius: 20, padding: 28, backgroundColor: 'rgba(5,28,47,.64)' },
   emptyIcon: { color: GOLD, fontSize: 34 },
   emptyTitle: { color: '#FFF', fontSize: 18, fontWeight: '900', marginTop: 8 },
@@ -607,9 +684,11 @@ const styles = StyleSheet.create({
   emptyButtonText: { color: NAVY, fontSize: 10, fontWeight: '900' },
   keyboardAvoider: { flex: 1 },
   shade: { flex: 1, backgroundColor: 'rgba(0,0,0,.7)', justifyContent: 'flex-end' },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject },
   shadeTop: { justifyContent: 'flex-start', paddingTop: 52 },
   sheet: { backgroundColor: '#FFF', borderTopLeftRadius: 27, borderTopRightRadius: 27, paddingHorizontal: 24, paddingTop: 10 },
   sheetTop: { borderRadius: 24, marginHorizontal: 12 },
+  sheetDragArea: { minHeight: 28, justifyContent: 'flex-start', paddingTop: 2 },
   sheetHandle: { width: 42, height: 4, borderRadius: 2, backgroundColor: '#D5DCE1', alignSelf: 'center', marginBottom: 18 },
   sheetEyebrow: { color: '#9A742E', fontSize: 9, fontWeight: '900', letterSpacing: 1.7 },
   sheetTitle: { color: NAVY, fontSize: 26, fontWeight: '900', marginTop: 4 },

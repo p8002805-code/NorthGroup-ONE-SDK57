@@ -1,5 +1,7 @@
+import { COMPACT_RECENT_ITEMS_LIMIT } from '../constants/recentItems';
+
 export const RECENTLY_OPENED_KEY = 'northgroup_one_recently_opened_v1';
-export const RECENTLY_OPENED_LIMIT = 6;
+export const RECENTLY_OPENED_LIMIT = COMPACT_RECENT_ITEMS_LIMIT;
 
 export const RECENTLY_OPENED_ITEMS = Object.freeze({
   account: {
@@ -73,3 +75,82 @@ export const RECENTLY_OPENED_ITEMS = Object.freeze({
     detail: 'Open the journey plan form',
   },
 });
+
+const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+const jobFileIcon = (item = {}) => {
+  if (item.folder) return '\u25a3';
+
+  const name = clean(item.name).toLowerCase();
+  const mime = clean(item.file?.mimeType).toLowerCase();
+  if (mime === 'application/pdf' || name.endsWith('.pdf')) return 'PDF';
+  if (mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(name)) return '\u25c9';
+  return '\u25a4';
+};
+
+const jobFileTypeLabel = (item = {}) => {
+  if (item.folder) return 'SHAREPOINT FOLDER';
+
+  const name = clean(item.name).toLowerCase();
+  const mime = clean(item.file?.mimeType).toLowerCase();
+  if (mime === 'application/pdf' || name.endsWith('.pdf')) return 'SHAREPOINT PDF';
+  if (mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(name)) return 'SHAREPOINT IMAGE';
+  return 'SHAREPOINT FILE';
+};
+
+export const createRecentlyOpenedJobFile = ({
+  item,
+  driveId,
+  job,
+  folderPath = [],
+}) => {
+  const itemId = clean(item?.id);
+  const resolvedDriveId = clean(driveId);
+  const title = clean(item?.name);
+  if (!itemId || !resolvedDriveId || !title) return null;
+
+  const jobNumber = clean(job?.number);
+  const path = folderPath.map(clean).filter(Boolean);
+  const location = [jobNumber, path.join(' / ')].filter(Boolean).join(' \u00b7 ');
+
+  return {
+    id: `job-file:${resolvedDriveId}:${itemId}`,
+    type: 'jobFile',
+    itemKind: item.folder ? 'folder' : 'file',
+    icon: jobFileIcon(item),
+    eyebrow: jobFileTypeLabel(item),
+    title,
+    detail: location || 'Job Files',
+    jobNumber,
+    driveId: resolvedDriveId,
+    itemId,
+    webUrl: clean(item.webUrl),
+  };
+};
+
+export const normaliseRecentlyOpenedItem = (value) => {
+  const staticItem = RECENTLY_OPENED_ITEMS[value?.id || value];
+  if (staticItem) return staticItem;
+
+  if (
+    value?.type !== 'jobFile'
+    || !clean(value.id).startsWith('job-file:')
+    || !clean(value.title)
+    || !clean(value.driveId)
+    || !clean(value.itemId)
+  ) return null;
+
+  return {
+    id: clean(value.id),
+    type: 'jobFile',
+    itemKind: value.itemKind === 'folder' ? 'folder' : 'file',
+    icon: clean(value.icon) || '\u25a4',
+    eyebrow: clean(value.eyebrow) || 'SHAREPOINT FILE',
+    title: clean(value.title),
+    detail: clean(value.detail) || 'Job Files',
+    jobNumber: clean(value.jobNumber),
+    driveId: clean(value.driveId),
+    itemId: clean(value.itemId),
+    webUrl: clean(value.webUrl),
+  };
+};

@@ -11,27 +11,27 @@
     [
       "expo-camera",
       {
-        "cameraPermission": "Camera access is used to capture survey photographs, create 3D feature scans, and share photos in Job Chat."
+        "cameraPermission": "Camera access is used to capture survey photographs, create 3D feature scans, and share photos in Job Chat and the NorthGroup Feed."
       }
     ],
     [
       "expo-location",
       {
-        "locationWhenInUsePermission": "Location is used to show local weather, provide the digital compass heading, and write an approximate GPS position into survey photo metadata."
+        "locationWhenInUsePermission": "Precise location is used to improve survey photo GPS quality, write coordinates into photo metadata, show local weather, and provide the digital compass heading."
       }
     ],
     "expo-mail-composer",
     [
       "expo-image-picker",
       {
-        "cameraPermission": "Allow NorthGroup One to take photos for survey records and Job Chat.",
-        "photosPermission": "Allow NorthGroup One to choose photos for survey records and Job Chat."
+        "cameraPermission": "Allow NorthGroup One to take photos for survey records, 3D feature scans, Job Chat and the NorthGroup Feed.",
+        "photosPermission": "Allow NorthGroup One to choose photos for survey records, Job Chat and the NorthGroup Feed."
       }
     ],
     [
       "expo-media-library",
       {
-        "photosPermission": "Allow NorthGroup One to access photos selected for survey records and Job Chat.",
+        "photosPermission": "Allow NorthGroup One to access photos selected for survey records, Job Chat and the NorthGroup Feed.",
         "savePhotosPermission": "Allow NorthGroup One to save survey photos and received Job Chat photos to your library."
       }
     ],
@@ -41,10 +41,23 @@
     "bundleIdentifier": "com.northgroup.northgroupone",
     "buildNumber": "1",
     "supportsTablet": false,
+    "entitlements": {
+      "com.apple.developer.default-data-protection": "NSFileProtectionComplete"
+    },
     "infoPlist": {
-      "UIFileSharingEnabled": true,
-      "LSSupportsOpeningDocumentsInPlace": true
+      "UIFileSharingEnabled": false,
+      "LSSupportsOpeningDocumentsInPlace": false,
+      "NSAppTransportSecurity": {
+        "NSAllowsArbitraryLoads": false,
+        "NSAllowsArbitraryLoadsForMedia": false,
+        "NSAllowsArbitraryLoadsInWebContent": false,
+        "NSAllowsLocalNetworking": false
+      },
+      "ITSAppUsesNonExemptEncryption": false
     }
+  },
+  "android": {
+    "allowBackup": false
   },
   "extra": {
     "eas": {

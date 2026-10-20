@@ -1,14 +1,22 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { accountStorageKey } from '../account/accountWorkspace';
+import { accountStorageKey } from '../../services/account/accountIdentity';
 import { loadJobShiftMembers } from '../jobs/teamsShiftsService';
+import {
+  assignedMemberProfilesResolved,
+  mergeAssignedMemberProfiles,
+} from './jobChatMembers';
 import {
   jobChatAttachmentKind,
   mimeTypeForJobChatAttachment,
 } from './jobChatAttachmentService';
+import {
+  GRAPH_ROOT,
+  graphCollection as sharedGraphCollection,
+  graphRequest as sharedGraphRequest,
+} from '../../services/sync/graphClient';
 
-const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
 const CACHE_PREFIX = 'northgroup_one_job_chat_cache_v3';
-const ROOM_CACHE_PREFIX = 'northgroup_one_job_chat_room_v1';
+const ROOM_CACHE_PREFIX = 'northgroup_one_job_chat_room_v2';
 const MEMBER_SYNC_INTERVAL_MS = 15 * 60 * 1000;
 
 const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -30,46 +38,24 @@ const graphErrorMessage = (status, body) => {
   return message || `Microsoft Teams request failed (${status}).`;
 };
 
-const graphRequest = async (url, accessToken, options = {}) => {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
-    },
-  });
+const chatSyncConfig = (operation) => ({
+  feature: 'jobChat',
+  operation,
+  errorMessage: graphErrorMessage,
+});
 
-  const text = await response.text();
-  let body = null;
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = null;
-    }
-  }
+const graphRequest = (url, accessToken, options = {}) => sharedGraphRequest(
+  url,
+  accessToken,
+  options,
+  chatSyncConfig(`${String(options.method || 'GET').toUpperCase()} Job Chat`),
+);
 
-  if (!response.ok) {
-    const error = new Error(graphErrorMessage(response.status, body));
-    error.status = response.status;
-    throw error;
-  }
-
-  return body;
-};
-
-const graphCollection = async (url, accessToken) => {
-  const values = [];
-  let nextUrl = url;
-  while (nextUrl) {
-    const body = await graphRequest(nextUrl, accessToken);
-    values.push(...(Array.isArray(body?.value) ? body.value : []));
-    nextUrl = body?.['@odata.nextLink'] || '';
-  }
-  return values;
-};
+const graphCollection = (url, accessToken) => sharedGraphCollection(
+  url,
+  accessToken,
+  chatSyncConfig('Load Job Chat'),
+);
 
 const decodeEntities = (value) => String(value || '')
   .replace(/&nbsp;/gi, ' ')
@@ -203,10 +189,24 @@ const normaliseAttachments = (message, chatId) => {
   return [...attachments, ...hosted];
 };
 
+const normaliseReactions = (message) => (
+  (Array.isArray(message?.reactions) ? message.reactions : []).map((reaction, index) => {
+    const identity = reaction?.user?.user || reaction?.user || {};
+    return {
+      id: `${clean(reaction?.reactionType) || 'reaction'}-${clean(identity?.id) || index}`,
+      reactionType: clean(reaction?.reactionType),
+      userId: clean(identity?.id),
+      userName: clean(identity?.displayName),
+      createdAt: reaction?.createdDateTime || '',
+    };
+  }).filter((reaction) => reaction.reactionType)
+);
+
 const normaliseMessage = (message, chatId = '') => {
   const user = message?.from?.user;
   const application = message?.from?.application;
   const attachments = normaliseAttachments(message, chatId);
+  const reactions = normaliseReactions(message);
   return {
     id: String(message?.id || ''),
     senderId: user?.id || application?.id || 'system',
@@ -217,6 +217,7 @@ const normaliseMessage = (message, chatId = '') => {
     webUrl: message?.webUrl || '',
     attachments,
     attachmentCount: attachments.length,
+    reactions,
   };
 };
 
@@ -335,12 +336,16 @@ const createJobChat = async ({ accessToken, job, userIds }) => graphRequest(
   },
 );
 
+const listJobChatMembers = ({ accessToken, chatId }) => graphCollection(
+  `${GRAPH_ROOT}/chats/${encodePath(chatId)}/members`,
+  accessToken,
+);
+
 const syncJobChatMembers = async ({ accessToken, chat, assignedUserIds }) => {
-  const members = await graphCollection(
-    `${GRAPH_ROOT}/chats/${encodePath(chat.id)}/members`,
+  const members = await listJobChatMembers({
     accessToken,
-  );
-  const assigned = new Set(assignedUserIds.map((id) => String(id).toLowerCase()));
+    chatId: chat.id,
+  });
   const existing = new Map(
     members
       .filter((member) => member?.userId)
@@ -364,23 +369,17 @@ const syncJobChatMembers = async ({ accessToken, chat, assignedUserIds }) => {
     }
   }
 
-  for (const member of members) {
-    if (!member?.id || !member?.userId) continue;
-    if (assigned.has(String(member.userId).toLowerCase())) continue;
-    try {
-      await graphRequest(
-        `${GRAPH_ROOT}/chats/${encodePath(chat.id)}/members/${encodePath(member.id)}`,
-        accessToken,
-        { method: 'DELETE' },
-      );
-    } catch (error) {
-      failures.push(error);
-    }
-  }
+  // Shifts controls who is added to a job chat, but it must not remove people
+  // who already belong to the conversation. Jobs can continue beyond the
+  // 28-day Shifts import window, and the Teams history must remain available
+  // to everyone who previously worked on the job.
 
-  return failures.length
-    ? 'The conversation is available, but one or more Shifts members could not be synchronised.'
-    : '';
+  return {
+    members,
+    warning: failures.length
+      ? 'The conversation is available, but one or more Shifts members could not be synchronised.'
+      : '',
+  };
 };
 
 export const ensureJobChat = async ({
@@ -394,7 +393,14 @@ export const ensureJobChat = async ({
   const syncIsFresh = lastSyncedAt > 0
     && (Date.now() - lastSyncedAt) < MEMBER_SYNC_INTERVAL_MS;
 
-  if (cachedRoom && (!syncMembers || syncIsFresh)) {
+  // Rooms cached before the directory permission was enabled contain numbered
+  // placeholder members. Only treat the cache as ready after a real directory
+  // lookup has completed, otherwise that placeholder state can survive the
+  // permission rollout for another sync interval.
+  const cachedMembersReady = Boolean(
+    cachedRoom?.assignedMembersResolved || cachedRoom?.directoryMembersResolved,
+  );
+  if (cachedRoom && cachedMembersReady && (!syncMembers || syncIsFresh)) {
     return {
       chat: cachedRoom,
       created: false,
@@ -431,17 +437,41 @@ export const ensureJobChat = async ({
     }
   }
 
-  const syncWarning = created || !syncMembers
-    ? ''
-    : await syncJobChatMembers({
-      accessToken,
-      chat,
-      assignedUserIds,
-    });
+  let syncWarning = '';
+  let chatMembers = [];
+  if (syncMembers) {
+    if (created) {
+      try {
+        chatMembers = await listJobChatMembers({ accessToken, chatId: chat.id });
+      } catch {
+        // A newly created chat can take a moment to expose its member list.
+      }
+    } else {
+      const synced = await syncJobChatMembers({
+        accessToken,
+        chat,
+        assignedUserIds,
+      });
+      syncWarning = synced.warning;
+      chatMembers = synced.members;
+    }
+  }
+
+  const assignedMembers = mergeAssignedMemberProfiles(assignment.members, chatMembers);
+  const assignedMembersResolved = assignedMemberProfilesResolved(
+    assignedMembers,
+    assignedUserIds.length,
+  );
+  if (!assignedMembersResolved && !syncWarning) {
+    syncWarning = assignment.directoryError || '';
+  }
 
   const room = {
     ...chat,
     assignedCount: assignedUserIds.length,
+    assignedMembers,
+    assignedMembersResolved,
+    directoryMembersResolved: assignedMembersResolved,
     syncWarning,
     membersSyncedAt: syncMembers ? new Date().toISOString() : cachedRoom?.membersSyncedAt || '',
   };
@@ -575,4 +605,52 @@ export const sendJobChatAttachmentMessage = async ({
   });
   posted.attachmentCount = posted.attachments.length;
   return upsertCachedMessage({ accountId, job, message: posted });
+};
+
+export const setJobChatReaction = async ({
+  accessToken,
+  chatId,
+  messageId,
+  reactionType,
+}) => graphRequest(
+  `${GRAPH_ROOT}/chats/${encodePath(chatId)}/messages/${encodePath(messageId)}/setReaction`,
+  accessToken,
+  {
+    method: 'POST',
+    body: JSON.stringify({ reactionType }),
+  },
+);
+
+export const unsetJobChatReaction = async ({
+  accessToken,
+  chatId,
+  messageId,
+  reactionType,
+}) => graphRequest(
+  `${GRAPH_ROOT}/chats/${encodePath(chatId)}/messages/${encodePath(messageId)}/unsetReaction`,
+  accessToken,
+  {
+    method: 'POST',
+    body: JSON.stringify({ reactionType }),
+  },
+);
+
+export const softDeleteJobChatMessage = async ({
+  accessToken,
+  accountId,
+  job,
+  chatId,
+  messageId,
+}) => {
+  await graphRequest(
+    `${GRAPH_ROOT}/users/${encodePath(accountId)}/chats/${encodePath(chatId)}/messages/${encodePath(messageId)}/softDelete`,
+    accessToken,
+    { method: 'POST' },
+  );
+  const cached = await readCachedJobChatMessages({ accountId, job });
+  await writeCachedJobChatMessages({
+    accountId,
+    job,
+    messages: cached.filter((message) => message.id !== messageId),
+  });
 };

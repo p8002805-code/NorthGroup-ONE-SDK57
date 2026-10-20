@@ -2,16 +2,13 @@ import { Alert } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   PDFDocument,
   StandardFonts,
   rgb,
 } from 'pdf-lib';
 
-import { buildSE14RecordName } from '../utils/se14Records';
-import { SE14_DRAFT_KEY } from '../utils/se14Records';
-import { jobStorageKey } from '../features/jobs/jobContext';
+import { buildSE14ExportName } from './formExportNames';
 import { buildSE14Html } from './se14/buildSE14Html';
 
 const addEditableDataFileFields = async (sourceUri, se14) => {
@@ -119,30 +116,40 @@ field.setFontSize(10);
   return document.saveAsBase64();
 };
 
-export const exportSE14Pdf = async (se14, onPrepared) => {
+const createSE14Pdf = async (se14, userInitials = '') => {
+  const html = await buildSE14Html(se14);
+  const file = await Print.printToFileAsync({ html });
+  const exportName = buildSE14ExportName(se14, userInitials);
+  const exportUri = `${FileSystem.documentDirectory}${exportName}`;
+
+  await FileSystem.deleteAsync(exportUri, {
+    idempotent: true,
+  });
+
+  const editablePdfBase64 =
+    await addEditableDataFileFields(file.uri, se14);
+
+  await FileSystem.writeAsStringAsync(
+    exportUri,
+    editablePdfBase64,
+    { encoding: FileSystem.EncodingType.Base64 }
+  );
+
+  return { exportName, exportUri };
+};
+
+export const prepareSE14Pdf = async (se14, userInitials = '') => {
   try {
-    await AsyncStorage.setItem(
-      jobStorageKey(SE14_DRAFT_KEY, se14.jobSnapshot || { number: se14.projectNumber }),
-      JSON.stringify(se14)
-    );
+    return await createSE14Pdf(se14, userInitials);
+  } catch (error) {
+    Alert.alert('PDF preparation failed', String(error?.message || error));
+    return { exported: false };
+  }
+};
 
-    const html = await buildSE14Html(se14);
-    const file = await Print.printToFileAsync({ html });
-    const exportName = `${buildSE14RecordName(se14)}.pdf`;
-    const exportUri = `${FileSystem.documentDirectory}${exportName}`;
-
-    await FileSystem.deleteAsync(exportUri, {
-      idempotent: true,
-    });
-
-    const editablePdfBase64 =
-      await addEditableDataFileFields(file.uri, se14);
-
-    await FileSystem.writeAsStringAsync(
-      exportUri,
-      editablePdfBase64,
-      { encoding: FileSystem.EncodingType.Base64 }
-    );
+export const exportSE14Pdf = async (se14, onPrepared, userInitials = '') => {
+  try {
+    const { exportName, exportUri } = await createSE14Pdf(se14, userInitials);
 
     // The PDF is now fully prepared. Hide the blocking overlay before
     // opening the iOS share sheet so cancelling Share cannot leave it stuck.

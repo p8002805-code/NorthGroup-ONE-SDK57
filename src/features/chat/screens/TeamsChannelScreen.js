@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import AppBackButton from '../../../components/AppBackButton';
+import { isTrustedTeamsWebUrl } from '../../../services/security/trustedExternalUrl';
 import {
   loadTeamsChannelMessages,
   readCachedChannelMessages,
@@ -170,6 +171,10 @@ export default function TeamsChannelScreen({
 
   const openInTeams = async (url) => {
     if (!url) return;
+    if (!isTrustedTeamsWebUrl(url)) {
+      Alert.alert('Untrusted link blocked', 'This post did not contain a secure Microsoft Teams link.');
+      return;
+    }
     try {
       await Linking.openURL(url);
     } catch {

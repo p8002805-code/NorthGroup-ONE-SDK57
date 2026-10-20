@@ -11,7 +11,9 @@ export default function CurrentJobCard({ job, compact = false }) {
 
   return (
     <View style={[styles.card, compact && styles.compact]}>
-      <View style={styles.rule} />
+      <View style={styles.jobIcon}>
+        <Text style={styles.jobIconText}>{hasJob ? '⌖' : '!'}</Text>
+      </View>
       <View style={styles.copy}>
         <View style={styles.eyebrowRow}>
           <View style={[styles.dot, !hasJob && styles.dotInactive]} />
@@ -19,18 +21,18 @@ export default function CurrentJobCard({ job, compact = false }) {
             {hasJob ? 'CURRENT JOB' : 'JOB REQUIRED'}
           </Text>
         </View>
-        <Text style={styles.title} numberOfLines={2}>
-          {job?.number || 'No job selected'}
-          {job?.name ? ` · ${job.name}` : ''}
-        </Text>
-        {job?.location ? (
-          <Text style={styles.location} numberOfLines={2}>
-            ⌖  {job.location}
+        <View style={styles.jobLine}>
+          <Text style={styles.title} numberOfLines={1}>
+            {job?.number || 'No job selected'}
           </Text>
-        ) : null}
+          {job?.name ? (
+            <Text style={styles.name} numberOfLines={1}>· {job.name}</Text>
+          ) : null}
+        </View>
+        {job?.location ? <Text style={styles.location} numberOfLines={1}>{job.location}</Text> : null}
       </View>
       <View style={styles.status}>
-        <Text style={styles.statusText}>{hasJob ? '✓' : '!'}</Text>
+        <Text style={styles.statusText}>{hasJob ? 'ACTIVE' : 'SELECT'}</Text>
       </View>
     </View>
   );
@@ -38,12 +40,12 @@ export default function CurrentJobCard({ job, compact = false }) {
 
 const createStyles = (colors) => StyleSheet.create({
   card: {
-    overflow: 'hidden',
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: SPACING.lg,
-    padding: SPACING.lg,
-    borderRadius: RADIUS.lg,
+    marginBottom: SPACING.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.md,
+    borderRadius: RADIUS.md,
     borderWidth: 1,
     borderColor: colors.divider,
     backgroundColor: colors.headerSurface,
@@ -52,19 +54,24 @@ const createStyles = (colors) => StyleSheet.create({
     marginHorizontal: 18,
     marginTop: 16,
   },
-  rule: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    backgroundColor: colors.accent,
+  jobIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: SPACING.md,
+    backgroundColor: colors.warningBackground,
+  },
+  jobIconText: {
+    color: colors.accent,
+    fontSize: 18,
+    fontWeight: '900',
   },
   copy: {
     flex: 1,
     minWidth: 0,
-    paddingLeft: SPACING.xs,
-    paddingRight: SPACING.md,
+    paddingRight: SPACING.sm,
   },
   eyebrowRow: {
     flexDirection: 'row',
@@ -82,33 +89,48 @@ const createStyles = (colors) => StyleSheet.create({
   },
   eyebrow: {
     color: colors.accent,
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '900',
-    letterSpacing: 1.5,
+    letterSpacing: 1.2,
+  },
+  jobLine: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginTop: 3,
   },
   title: {
     color: colors.white,
-    fontSize: 16,
-    lineHeight: 21,
+    fontSize: 15,
+    lineHeight: 19,
     fontWeight: '900',
-    marginTop: SPACING.xs,
+  },
+  name: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.white,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '700',
+    marginLeft: 5,
   },
   location: {
     color: colors.textMuted,
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: SPACING.xs,
+    fontSize: 10,
+    lineHeight: 14,
+    marginTop: 2,
   },
   status: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    minHeight: 24,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 8,
     backgroundColor: colors.warningBackground,
   },
   statusText: {
     color: colors.accent,
+    fontSize: 7,
     fontWeight: '900',
+    letterSpacing: 0.7,
   },
 });

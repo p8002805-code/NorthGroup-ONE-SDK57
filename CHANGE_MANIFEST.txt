@@ -1,0 +1,16 @@
+NorthGroup ONE — Changed Files Package
+
+Release: 2026.08.16-beta.13
+Version: 1.0.12
+Source build: 13
+Revision: job-app-data-folders-01
+Package: job-workspace-render-error-hotfix
+Created: 2026-08-18T10:09:13.342Z
+
+Changed/created files (2):
+- src/features/jobs/screens/JobWorkspaceScreen.js
+- tests/progressAndSync.test.js
+
+Replace each file at the matching project-relative path.
+Then run: npm run validate
+Restart development testing with: npx expo start --tunnel --clear

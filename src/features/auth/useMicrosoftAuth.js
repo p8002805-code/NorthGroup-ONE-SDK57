@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as AuthSession from 'expo-auth-session';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
@@ -6,19 +6,33 @@ import {
   MICROSOFT_CLIENT_ID,
   MICROSOFT_DISCOVERY,
   MICROSOFT_GRAPH_ME,
+  MICROSOFT_ASSIGNED_USER_SCOPES,
+  MICROSOFT_PERMISSION_GRANT_VERSION,
   MICROSOFT_REDIRECT_URI,
   MICROSOFT_SCOPES,
 } from './microsoftConfig';
 import {
+  assertMicrosoftScopes,
+  grantedMicrosoftScopes,
+  missingMicrosoftScopes,
+} from './microsoftScopeState';
+import {
   downloadMicrosoftProfilePhoto,
   readCachedMicrosoftProfilePhoto,
 } from '../account/microsoftProfilePhoto';
+import { graphRequest } from '../../services/sync/graphClient';
+import { clearPrivateFileCaches } from '../../services/security/privateFileCache';
+import { suspendPrivacyShield } from '../../services/security/privacyShieldControl';
 
 WebBrowser.maybeCompleteAuthSession();
 
 const SESSION_KEY = 'northgroup_microsoft_session_v1';
 const EXPIRY_MARGIN_SECONDS = 120;
 const SCOPE_FINGERPRINT = MICROSOFT_SCOPES.join(' ');
+const SESSION_SECURITY_VERSION = 3;
+const SESSION_STORAGE_OPTIONS = {
+  keychainAccessible: SecureStore.WHEN_PASSCODE_SET_THIS_DEVICE_ONLY,
+};
 
 const expiresAt = (token) => (
   Number(token?.issuedAt || Math.floor(Date.now() / 1000))
@@ -26,16 +40,12 @@ const expiresAt = (token) => (
 );
 
 const readMicrosoftProfile = async (accessToken) => {
-  const response = await fetch(
+  const user = await graphRequest(
     `${MICROSOFT_GRAPH_ME}?$select=id,displayName,givenName,surname,mail,userPrincipalName,jobTitle,officeLocation`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+    accessToken,
+    {},
+    { feature: 'microsoftProfile', operation: 'Load Microsoft profile' },
   );
-
-  if (!response.ok) {
-    throw new Error(`Microsoft Graph profile request failed (${response.status}).`);
-  }
-
-  const user = await response.json();
   return {
     id: user.id,
     displayName: user.displayName || '',
@@ -48,9 +58,19 @@ const readMicrosoftProfile = async (accessToken) => {
 };
 
 const saveSession = async (session) => {
-  await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(session), {
-    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-  });
+  try {
+    await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify({
+      ...session,
+      sessionSecurityVersion: SESSION_SECURITY_VERSION,
+    }), SESSION_STORAGE_OPTIONS);
+  } catch (cause) {
+    const error = new Error(
+      'NorthGroup One requires a device passcode to protect your Microsoft session. Set a passcode in the phone settings, then sign in again.',
+    );
+    error.code = 'MICROSOFT_SECURE_STORAGE_REQUIRED';
+    error.cause = cause;
+    throw error;
+  }
 };
 
 export default function useMicrosoftAuth() {
@@ -61,6 +81,8 @@ export default function useMicrosoftAuth() {
   const [profilePhotoUri, setProfilePhotoUri] = useState('');
   const [profilePhotoRevision, setProfilePhotoRevision] = useState(0);
   const [profilePhotoLoading, setProfilePhotoLoading] = useState(false);
+  const refreshPromiseRef = useRef(null);
+  const authGenerationRef = useRef(0);
 
   const [request, response, promptAsync] = AuthSession.useAuthRequest(
     {
@@ -78,26 +100,51 @@ export default function useMicrosoftAuth() {
 
   const refreshSession = useCallback(async (current) => {
     if (!current?.refreshToken) throw new Error('Your Microsoft session has expired.');
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
 
-    const token = await AuthSession.refreshAsync(
-      {
-        clientId: MICROSOFT_CLIENT_ID,
-        refreshToken: current.refreshToken,
-        scopes: MICROSOFT_SCOPES,
-      },
-      MICROSOFT_DISCOVERY,
-    );
+    const generation = authGenerationRef.current;
+    const refreshPromise = (async () => {
+      const token = await AuthSession.refreshAsync(
+        {
+          clientId: MICROSOFT_CLIENT_ID,
+          refreshToken: current.refreshToken,
+          scopes: MICROSOFT_SCOPES,
+        },
+        MICROSOFT_DISCOVERY,
+      );
+      const grantedScopes = grantedMicrosoftScopes(token, MICROSOFT_SCOPES);
+      assertMicrosoftScopes(grantedScopes, MICROSOFT_ASSIGNED_USER_SCOPES);
+      if (authGenerationRef.current !== generation) {
+        const cancelled = new Error('The Microsoft session changed while it was refreshing.');
+        cancelled.code = 'MICROSOFT_SESSION_CHANGED';
+        throw cancelled;
+      }
 
-    const next = {
-      ...current,
-      accessToken: token.accessToken,
-      refreshToken: token.refreshToken || current.refreshToken,
-      issuedAt: token.issuedAt,
-      expiresIn: token.expiresIn,
-      scopeFingerprint: SCOPE_FINGERPRINT,
-    };
-    await saveSession(next);
-    return next;
+      const next = {
+        ...current,
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken || current.refreshToken,
+        issuedAt: token.issuedAt,
+        expiresIn: token.expiresIn,
+        scopeFingerprint: SCOPE_FINGERPRINT,
+        permissionGrantVersion: MICROSOFT_PERMISSION_GRANT_VERSION,
+        grantedScopes,
+      };
+      await saveSession(next);
+      if (authGenerationRef.current !== generation) {
+        await SecureStore.deleteItemAsync(SESSION_KEY, SESSION_STORAGE_OPTIONS);
+        const cancelled = new Error('The Microsoft session changed while it was refreshing.');
+        cancelled.code = 'MICROSOFT_SESSION_CHANGED';
+        throw cancelled;
+      }
+      return next;
+    })();
+    refreshPromiseRef.current = refreshPromise;
+    try {
+      return await refreshPromise;
+    } finally {
+      if (refreshPromiseRef.current === refreshPromise) refreshPromiseRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -105,19 +152,31 @@ export default function useMicrosoftAuth() {
 
     (async () => {
       try {
-        const saved = await SecureStore.getItemAsync(SESSION_KEY);
+        const saved = await SecureStore.getItemAsync(SESSION_KEY, SESSION_STORAGE_OPTIONS);
         if (!saved) return;
         let restored = JSON.parse(saved);
+        if (
+          restored.permissionGrantVersion !== MICROSOFT_PERMISSION_GRANT_VERSION
+          || missingMicrosoftScopes(
+            restored.grantedScopes || [],
+            MICROSOFT_ASSIGNED_USER_SCOPES,
+          ).length
+        ) {
+          await SecureStore.deleteItemAsync(SESSION_KEY, SESSION_STORAGE_OPTIONS);
+          return;
+        }
         const now = Math.floor(Date.now() / 1000);
         if (
           expiresAt(restored) <= now + EXPIRY_MARGIN_SECONDS
           || restored.scopeFingerprint !== SCOPE_FINGERPRINT
         ) {
           restored = await refreshSession(restored);
+        } else if (restored.sessionSecurityVersion !== SESSION_SECURITY_VERSION) {
+          await saveSession(restored);
         }
         if (mounted) setSession(restored);
       } catch {
-        await SecureStore.deleteItemAsync(SESSION_KEY);
+        await SecureStore.deleteItemAsync(SESSION_KEY, SESSION_STORAGE_OPTIONS);
       } finally {
         if (mounted) setReady(true);
       }
@@ -150,10 +209,13 @@ export default function useMicrosoftAuth() {
             clientId: MICROSOFT_CLIENT_ID,
             code: response.params.code,
             redirectUri: MICROSOFT_REDIRECT_URI,
+            scopes: MICROSOFT_SCOPES,
             extraParams: { code_verifier: request.codeVerifier },
           },
           MICROSOFT_DISCOVERY,
         );
+        const grantedScopes = grantedMicrosoftScopes(token, MICROSOFT_SCOPES);
+        assertMicrosoftScopes(grantedScopes, MICROSOFT_ASSIGNED_USER_SCOPES);
         const user = await readMicrosoftProfile(token.accessToken);
         const next = {
           accessToken: token.accessToken,
@@ -161,6 +223,8 @@ export default function useMicrosoftAuth() {
           issuedAt: token.issuedAt,
           expiresIn: token.expiresIn,
           scopeFingerprint: SCOPE_FINGERPRINT,
+          permissionGrantVersion: MICROSOFT_PERMISSION_GRANT_VERSION,
+          grantedScopes,
           user,
         };
         await saveSession(next);
@@ -179,17 +243,24 @@ export default function useMicrosoftAuth() {
     if (!request || busy) return;
     setError('');
     setBusy(true);
+    const restorePrivacyShield = suspendPrivacyShield();
     try {
       await promptAsync();
     } catch (authError) {
       setBusy(false);
       setError(authError?.message || 'Microsoft sign-in could not be opened.');
+    } finally {
+      restorePrivacyShield();
     }
   }, [busy, promptAsync, request]);
 
   const signOut = useCallback(async () => {
-    await SecureStore.deleteItemAsync(SESSION_KEY);
+    authGenerationRef.current += 1;
+    refreshPromiseRef.current = null;
+    await SecureStore.deleteItemAsync(SESSION_KEY, SESSION_STORAGE_OPTIONS);
+    await clearPrivateFileCaches();
     setSession(null);
+    setProfilePhotoUri('');
     setError('');
   }, []);
 

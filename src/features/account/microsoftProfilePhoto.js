@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { downloadAuthenticatedGraphFile } from '../../services/sync/graphFileTransfer';
+import { trackSyncOperation } from '../../services/sync/syncState';
 
-const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
 const PHOTO_SIZE = '240x240';
 const CACHE_DIRECTORY = `${FileSystem.cacheDirectory}northgroup-profile-photos/`;
 
@@ -28,7 +29,7 @@ export const readCachedMicrosoftProfilePhoto = async (accountId) => {
   }
 };
 
-export const downloadMicrosoftProfilePhoto = async ({
+const downloadMicrosoftProfilePhotoContent = async ({
   accessToken,
   accountId,
 }) => {
@@ -39,16 +40,16 @@ export const downloadMicrosoftProfilePhoto = async ({
   const temporary = `${destination}.download`;
 
   try {
-    const result = await FileSystem.downloadAsync(
-      `${GRAPH_ROOT}/me/photos/${PHOTO_SIZE}/$value`,
-      temporary,
-      {
+    const result = await downloadAuthenticatedGraphFile({
+      accessToken,
+      urlOrPath: `/me/photos/${PHOTO_SIZE}/$value`,
+      destination: temporary,
+      options: {
         headers: {
-          Authorization: `Bearer ${accessToken}`,
           Accept: 'image/jpeg,image/png,image/*',
         },
       },
-    );
+    });
 
     if (result.status === 404) {
       await FileSystem.deleteAsync(temporary, { idempotent: true });
@@ -71,3 +72,8 @@ export const downloadMicrosoftProfilePhoto = async ({
     throw error;
   }
 };
+
+export const downloadMicrosoftProfilePhoto = async (parameters) => trackSyncOperation(
+  { feature: 'microsoftProfile', operation: 'Download Microsoft profile photo' },
+  () => downloadMicrosoftProfilePhotoContent(parameters),
+);

@@ -8,7 +8,12 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-import { GOLD, NAVY, resolvePhotoUri } from "../constants/photoTheme";
+import {
+  GOLD,
+  NAVY,
+  gpsColour,
+  resolvePhotoUri,
+} from "../constants/photoTheme";
 import styles from "../styles/surveyPhotoStyles";
 
 export default function PhotoHomeView({
@@ -29,11 +34,18 @@ export default function PhotoHomeView({
     .slice(0, 8);
   const gpsReady =
     locationPermission?.granted && Number.isFinite(Number(accuracy));
+  const gpsAccuracy = gpsReady ? Number(accuracy) : null;
+  const gpsStatusColour = gpsReady ? gpsColour(gpsAccuracy) : GOLD;
   const gpsValue = !locationPermission?.granted
     ? "Required"
     : gpsReady
-      ? `±${Number(accuracy).toFixed(1)} m`
+      ? `±${gpsAccuracy.toFixed(1)} m`
       : "Waiting";
+  const gpsBadgeText = !locationPermission?.granted
+    ? "GPS REQUIRED"
+    : gpsReady
+      ? `GPS ±${gpsAccuracy.toFixed(1)} M`
+      : "GPS WAITING";
 
   return (
     <View style={styles.homePage}>
@@ -41,6 +53,9 @@ export default function PhotoHomeView({
         style={styles.body}
         contentContainerStyle={styles.homeContent}
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
       >
         <View style={styles.homeReadyCard}>
           <View style={styles.homeReadyHeading}>
@@ -51,17 +66,24 @@ export default function PhotoHomeView({
             <View
               style={[
                 styles.homeReadyBadge,
-                !gpsReady && styles.homeReadyBadgeWaiting,
+                (!gpsReady || gpsAccuracy > 8) &&
+                  styles.homeReadyBadgeWaiting,
+                { borderColor: gpsStatusColour },
               ]}
             >
               <View
                 style={[
                   styles.homeReadyDot,
-                  { backgroundColor: gpsReady ? "#21854E" : GOLD },
+                  { backgroundColor: gpsStatusColour },
                 ]}
               />
-              <Text style={styles.homeReadyBadgeText}>
-                {gpsReady ? "READY" : "CHECK GPS"}
+              <Text
+                style={[
+                  styles.homeReadyBadgeText,
+                  { color: gpsStatusColour },
+                ]}
+              >
+                {gpsBadgeText}
               </Text>
             </View>
           </View>
@@ -75,7 +97,8 @@ export default function PhotoHomeView({
               icon="navigate-circle-outline"
               label="GPS"
               value={gpsValue}
-              accent={gpsReady}
+              accentColor={gpsStatusColour}
+              valueColor={gpsStatusColour}
             />
             <ReadinessItem
               icon="briefcase-outline"
@@ -162,15 +185,21 @@ export default function PhotoHomeView({
   );
 }
 
-function ReadinessItem({ accent, icon, label, value }) {
+function ReadinessItem({ accentColor, icon, label, value, valueColor }) {
   return (
     <View style={styles.homeReadinessItem}>
       <View style={styles.homeReadinessIcon}>
-        <Ionicons name={icon} size={17} color={accent ? "#21854E" : GOLD} />
+        <Ionicons name={icon} size={17} color={accentColor || GOLD} />
       </View>
       <View style={styles.homeReadinessCopy}>
         <Text style={styles.homeReadinessLabel}>{label}</Text>
-        <Text numberOfLines={1} style={styles.homeReadinessValue}>
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.homeReadinessValue,
+            valueColor ? { color: valueColor } : null,
+          ]}
+        >
           {value}
         </Text>
       </View>

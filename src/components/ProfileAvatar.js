@@ -18,6 +18,7 @@ export default function ProfileAvatar({
   style,
 }) {
   const radius = size / 2;
+  const displayInitials = String(initials || 'NG').slice(0, 4).toUpperCase();
   const sharedStyle = {
     width: size,
     height: size,
@@ -51,11 +52,14 @@ export default function ProfileAvatar({
           styles.initials,
           {
             color: textColor,
-            fontSize: Math.max(9, Math.round(size * 0.34)),
+            fontSize: Math.max(
+              8,
+              Math.round(size * (displayInitials.length > 2 ? 0.26 : 0.34)),
+            ),
           },
         ]}
       >
-        {String(initials || 'NG').slice(0, 2).toUpperCase()}
+        {displayInitials}
       </Text>
     </View>
   );

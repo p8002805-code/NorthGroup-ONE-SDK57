@@ -78,6 +78,7 @@ export function HazardBlock({
   forceOpen = false,
   onComplete,
   onOpen,
+  onOpenRiskMatrix,
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   const [riskStep, setRiskStep] = useState(() => (
@@ -244,7 +245,17 @@ export function HazardBlock({
                   { label: 'Consequence', shortLabel: 'C', key: cKey },
                 ].map((group) => (
                   <View key={group.label} style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <View style={{ width: 96 }}><Text style={{ color: riskEnabled && riskStep === group.shortLabel ? '#D6A84F' : '#FFFFFF', fontWeight: '900', fontSize: 12 }}>{group.label}</Text></View>
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open risk matrix for ${group.label}`}
+                      onPress={onOpenRiskMatrix}
+                      activeOpacity={0.72}
+                      style={{ width: 96, flexDirection: 'row', alignItems: 'center' }}
+                    >
+                      <Text style={{ color: riskEnabled && riskStep === group.shortLabel ? '#D6A84F' : '#FFFFFF', fontWeight: '900', fontSize: 12 }}>
+                        {group.label} ›
+                      </Text>
+                    </TouchableOpacity>
                     <View style={{ flex: 1, flexDirection: 'row', gap: 6 }}>
                       {[1, 2, 3, 4, 5].map((value) => {
                         const selected = String(data[group.key] || '') === String(value);
@@ -293,6 +304,7 @@ export function Field({
   blurOnSubmit,
   onSubmitEditing,
   onFocus,
+  onBlur,
 }) {
   return (
     <View style={styles.fieldWrap}>
@@ -323,6 +335,7 @@ export function Field({
           blurOnSubmit === undefined ? !multiline : blurOnSubmit
         }
         onFocus={onFocus}
+        onBlur={onBlur}
         onSubmitEditing={
           onSubmitEditing || (multiline ? undefined : Keyboard.dismiss)
         }

@@ -8,6 +8,7 @@ import {
   ImageBackground,
   StyleSheet,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import styles from '../styles/styles';
@@ -25,8 +26,15 @@ import {
 import { S500_ACTIVITY_PRESETS } from '../constants/s500ActivityPresets';
 import PpeToggleRow from '../components/PpeToggleRow';
 import SwipeDeleteRow from '../components/SwipeDeleteRow';
-import AppBackButton from '../components/AppBackButton';
-import { applyProfileDefaults, profileFullName } from '../features/account/accountProfile';
+import NorthGroupBrandButton from '../components/NorthGroupBrandButton';
+import FormActionBar from '../components/FormActionBar';
+import LoadingOverlay from '../components/LoadingOverlay';
+import {
+  applyProfileDefaults,
+  profileFullName,
+  profileInitials,
+} from '../features/account/accountProfile';
+import { prepareS500Pdf } from '../export/exportS500Pdf';
 
 const getTodayDate = () => {
   const now = new Date();
@@ -45,12 +53,12 @@ const isHazardPopulated = (form, row) => !!(
 );
 
 const YesNoSelector = ({ label, value, onChange, disabled = false }) => (
-  <View style={{ flex: 1, opacity: disabled ? 0.5 : 1 }}>
-    <Text style={[styles.fieldLabel, { marginBottom: 7 }]}>{label}</Text>
-    <View style={{ flexDirection: 'row', gap: 7 }}>
+  <View style={[s500UiStyles.selectorGroup, disabled && s500UiStyles.selectorGroupDisabled]}>
+    <Text style={s500UiStyles.controlLabel}>{label}</Text>
+    <View style={s500UiStyles.selectorRow}>
       {[
-        { label: 'YES', value: true, colour: '#2D9655', background: '#DDF5E5' },
-        { label: 'NO', value: false, colour: '#B54A4A', background: '#FBE3E3' },
+        { label: 'YES', value: true },
+        { label: 'NO', value: false },
       ].map((option) => {
         const selected = value === option.value;
         return (
@@ -58,18 +66,20 @@ const YesNoSelector = ({ label, value, onChange, disabled = false }) => (
             key={option.label}
             disabled={disabled}
             onPress={() => onChange(option.value)}
-            style={{
-              flex: 1,
-              minHeight: 42,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 10,
-              borderWidth: selected ? 2 : 1,
-              borderColor: selected ? option.colour : '#CAD3DA',
-              backgroundColor: selected ? option.background : '#FFFFFF',
-            }}
+            activeOpacity={0.78}
+            accessibilityRole="button"
+            accessibilityState={{ selected, disabled }}
+            style={[
+              s500UiStyles.selectorButton,
+              selected && s500UiStyles.selectorButtonSelected,
+            ]}
           >
-            <Text style={{ color: selected ? option.colour : '#536674', fontWeight: '900', fontSize: 12 }}>
+            <Text
+              style={[
+                s500UiStyles.selectorButtonText,
+                selected && s500UiStyles.selectorButtonTextSelected,
+              ]}
+            >
               {option.label}
             </Text>
           </TouchableOpacity>
@@ -87,9 +97,12 @@ export default function S500FormScreen({
   exportS500Pdf,
   emailS500Pdf,
   setScreen,
+  openJobFiles,
+  onFormStatusChange,
   accountProfile,
   activeJob,
   backLabel = 'Forms',
+  goBack,
 }) {
   const insets = useSafeAreaInsets();
   const [showHazards, setShowHazards] = useState(false);
@@ -98,6 +111,7 @@ export default function S500FormScreen({
   const [hazardDeleteOpen, setHazardDeleteOpen] = useState(false);
   const [focusedHazardNumber, setFocusedHazardNumber] = useState(null);
   const [guidedSection, setGuidedSection] = useState(null);
+  const [preparingUpload, setPreparingUpload] = useState(false);
   const scrollRef = useRef(null);
   const sectionY = useRef({ date: 0, wms: 0, activity: 0, hazards: 0, ppe: 0 });
   const hazardRowY = useRef({});
@@ -505,20 +519,56 @@ export default function S500FormScreen({
   const exportValidated = () => { if (showCompletionIssue()) exportS500Pdf(); };
   const emailValidated = () => { if (showCompletionIssue()) emailS500Pdf(); };
 
+  const uploadValidated = async () => {
+    if (!showCompletionIssue() || preparingUpload) return;
+
+    setPreparingUpload(true);
+    try {
+      const result = await prepareS500Pdf(s500, profileInitials(accountProfile));
+      if (!result?.exportUri) return;
+
+      await onFormStatusChange?.('s500', 'complete', { date: s500.date });
+      openJobFiles?.({
+        formLabel: 'S-500 Pre-Start Risk Assessment',
+        pendingUpload: {
+          uri: result.exportUri,
+          name: result.exportName,
+          mimeType: 'application/pdf',
+        },
+      });
+    } finally {
+      setPreparingUpload(false);
+    }
+  };
+
   return (
-    <View style={styles.container}>
+    <ImageBackground
+      source={require('../../assets/topo-bg-vertical.png')}
+      style={styles.container}
+      imageStyle={s500UiStyles.pageTopoImage}
+    >
+      <View pointerEvents="none" style={s500UiStyles.pageShade} />
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
-      <ImageBackground
-        source={require('../../assets/topo-bg.png')}
+      <View
         style={[s500UiStyles.hero, { paddingTop: insets.top + 8 }]}
-        imageStyle={s500UiStyles.heroImage}
       >
-        <View style={s500UiStyles.heroShade} />
+        <View pointerEvents="none" style={s500UiStyles.heroShade} />
         <View style={s500UiStyles.heroTopRow}>
-          <AppBackButton label={backLabel} onPress={() => setScreen('formMenu')} style={s500UiStyles.heroButton} />
+          <NorthGroupBrandButton
+            onPress={goBack}
+            style={s500UiStyles.heroButton}
+            accessibilityLabel={`NorthGroup One, return to ${backLabel}`}
+            accessibilityHint={`Returns to ${backLabel}`}
+          />
           <Text style={s500UiStyles.heroCode}>S-500</Text>
-          <TouchableOpacity onPress={clearS500} style={[s500UiStyles.heroButton, s500UiStyles.heroButtonRight]}>
+          <TouchableOpacity
+            onPress={clearS500}
+            activeOpacity={0.76}
+            accessibilityRole="button"
+            accessibilityLabel="Clear Pre-Start form"
+            style={[s500UiStyles.heroButton, s500UiStyles.heroButtonRight]}
+          >
             <Text style={s500UiStyles.heroClearText}>Clear</Text>
           </TouchableOpacity>
         </View>
@@ -545,15 +595,28 @@ export default function S500FormScreen({
             <Text style={s500UiStyles.jobNumber}>{displayJob?.number || 'No job selected'}</Text>
             {displayJob?.name ? <Text style={s500UiStyles.jobName} numberOfLines={1}>{displayJob.name}</Text> : null}
           </View>
-          <View style={s500UiStyles.jobLock}><Text style={s500UiStyles.jobLockText}>✓</Text></View>
+          <View style={s500UiStyles.jobLock}>
+            <Ionicons name="checkmark" size={18} color="#D6A84F" />
+          </View>
         </TouchableOpacity>
-      </ImageBackground>
+      </View>
 
       <ScrollView
         ref={scrollRef}
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        style={[styles.scroll, s500UiStyles.scroll]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          s500UiStyles.scrollContent,
+          { paddingBottom: Math.max(60, insets.bottom + 32) },
+        ]}
         scrollEnabled={!hazardDeleteOpen}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets
       >
         <View
           onLayout={({ nativeEvent }) => { sectionY.current.date = nativeEvent.layout.y; }}
@@ -569,6 +632,9 @@ export default function S500FormScreen({
                 value={s500.date}
                 onChangeText={handleDateChange}
                 placeholder="DD/MM/YYYY"
+                containerStyle={s500UiStyles.dateFieldWrap}
+                labelStyle={s500UiStyles.controlLabel}
+                inputStyle={s500UiStyles.dateInput}
               />
             ) : (
               <TouchableOpacity onPress={setDateToToday} activeOpacity={0.8}>
@@ -578,6 +644,9 @@ export default function S500FormScreen({
                     value={s500.date}
                     onChangeText={handleDateChange}
                     placeholder="Set today"
+                    containerStyle={s500UiStyles.dateFieldWrap}
+                    labelStyle={s500UiStyles.controlLabel}
+                    inputStyle={s500UiStyles.dateInput}
                   />
                 </View>
               </TouchableOpacity>
@@ -588,9 +657,14 @@ export default function S500FormScreen({
             onPress={() => setScreen('s500RiskGuide')}
             activeOpacity={0.82}
           >
-            <View style={s500UiStyles.matrixIcon}><Text style={s500UiStyles.matrixIconText}>▦</Text></View>
-            <View style={{ flex: 1 }}><Text style={s500UiStyles.matrixEyebrow}>RISK REFERENCE</Text><Text style={s500UiStyles.matrixTitle}>VIEW RISK MATRIX</Text></View>
-            <Text style={s500UiStyles.matrixArrow}>›</Text>
+            <View style={s500UiStyles.matrixIcon}>
+              <Ionicons name="grid-outline" size={20} color="#061A2D" />
+            </View>
+            <View style={s500UiStyles.matrixCopy}>
+              <Text style={s500UiStyles.matrixEyebrow}>RISK REFERENCE</Text>
+              <Text style={s500UiStyles.matrixTitle}>VIEW RISK MATRIX</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={22} color="#061A2D" />
           </TouchableOpacity>
         </View>
 
@@ -602,7 +676,13 @@ export default function S500FormScreen({
             { label: 'READY', complete: formComplete, onPress: () => showCompletionIssue(false) },
           ].map((step, index) => (
             <TouchableOpacity key={step.label} disabled={!step.onPress} onPress={step.onPress} style={s500UiStyles.progressStep}>
-              <View style={[s500UiStyles.progressDot, step.complete && s500UiStyles.progressDotComplete]}><Text style={[s500UiStyles.progressDotText, step.complete && s500UiStyles.progressDotTextComplete]}>{step.complete ? '✓' : index + 1}</Text></View>
+              <View style={[s500UiStyles.progressDot, step.complete && s500UiStyles.progressDotComplete]}>
+                {step.complete ? (
+                  <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                ) : (
+                  <Text style={s500UiStyles.progressDotText}>{index + 1}</Text>
+                )}
+              </View>
               <Text style={[s500UiStyles.progressLabel, step.complete && s500UiStyles.progressLabelComplete]}>{step.label}</Text>
             </TouchableOpacity>
           ))}
@@ -623,32 +703,38 @@ export default function S500FormScreen({
           onLayout={({ nativeEvent }) => { sectionY.current.activity = nativeEvent.layout.y; }}
           style={guidedSection === 'activity' && s500UiStyles.guidedTarget}
         >
-          <Text style={styles.fieldLabel}>Activity</Text>
+          <Text style={s500UiStyles.controlLabel}>Activity</Text>
 
           <TouchableOpacity
-            style={styles.dropdownButton}
+            style={[styles.dropdownButton, s500UiStyles.activityButton]}
             onPress={() => setShowActivityOptions(!showActivityOptions)}
             activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showActivityOptions }}
           >
-            <Text style={styles.dropdownButtonText}>
+            <Text style={[styles.dropdownButtonText, s500UiStyles.activityButtonText]}>
               {s500.activity || 'Select activity'}
             </Text>
 
-            <Text style={styles.dropdownArrow}>
-              {showActivityOptions ? '▲' : '▼'}
-            </Text>
+            <Ionicons
+              name={showActivityOptions ? 'chevron-up' : 'chevron-down'}
+              size={21}
+              color="#D6A84F"
+            />
           </TouchableOpacity>
 
           {showActivityOptions && (
-            <View style={styles.dropdownList}>
+            <View style={[styles.dropdownList, s500UiStyles.activityList]}>
               {S500_ACTIVITY_PRESETS.map((preset) => (
                 <TouchableOpacity
                   key={preset.label}
-                  style={styles.dropdownItem}
+                  style={[styles.dropdownItem, s500UiStyles.activityItem]}
                   onPress={() => applyActivityPreset(preset)}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.dropdownItemText}>{preset.label}</Text>
+                  <Text style={[styles.dropdownItemText, s500UiStyles.activityItemText]}>
+                    {preset.label}
+                  </Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -664,6 +750,7 @@ export default function S500FormScreen({
             title="Hazards & Controls"
             subtitle={`${filledHazards} of ${visibleHazardCount} hazard rows filled`}
             open={showHazards}
+            tone="dark"
             onToggle={() => {
               setShowHazards(!showHazards);
               if (showHazards) setFocusedHazardNumber(null);
@@ -698,6 +785,7 @@ export default function S500FormScreen({
                   forceOpen={focusedHazardNumber === row.number}
                   onComplete={handleHazardComplete}
                   onOpen={handleHazardOpen}
+                  onOpenRiskMatrix={() => setScreen('s500RiskGuide')}
                 />
               </SwipeDeleteRow>
             </View>
@@ -708,21 +796,9 @@ export default function S500FormScreen({
               accessibilityLabel="Add another hazard"
               onPress={addHazardRow}
               activeOpacity={0.8}
-              style={{
-                alignSelf: 'center',
-                width: 44,
-                height: 44,
-                borderRadius: 22,
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginTop: 14,
-                marginBottom: 4,
-                backgroundColor: '#D6A84F',
-                borderWidth: 2,
-                borderColor: '#F5D98D',
-              }}
+              style={s500UiStyles.addButton}
             >
-              <Text style={{ color: '#061A2D', fontSize: 29, fontWeight: '700', lineHeight: 31 }}>+</Text>
+              <Ionicons name="add" size={27} color="#061A2D" />
             </TouchableOpacity>
           ) : null}
           </CollapseSection>
@@ -736,10 +812,8 @@ export default function S500FormScreen({
             title="Select PPE Required"
             subtitle={`${selectedPpe} PPE items selected`}
             open={showPpe}
+            tone="dark"
             onToggle={() => setShowPpe(!showPpe)}
-            headerStyle={styles.ppeCollapseHeader}
-            titleStyle={styles.ppeCollapseTitle}
-            subtitleStyle={styles.ppeCollapseSubtitle}
           >
           <View style={styles.ppeGrid}>
             {visiblePpeItems.map((item) => (
@@ -776,21 +850,9 @@ export default function S500FormScreen({
               accessibilityLabel="Add another PPE item"
               onPress={addCustomPpe}
               activeOpacity={0.8}
-              style={{
-                alignSelf: 'center',
-                width: 44,
-                height: 44,
-                borderRadius: 22,
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginTop: 14,
-                marginBottom: 4,
-                backgroundColor: '#D6A84F',
-                borderWidth: 2,
-                borderColor: '#F5D98D',
-              }}
+              style={s500UiStyles.addButton}
             >
-              <Text style={{ color: '#061A2D', fontSize: 29, fontWeight: '700', lineHeight: 31 }}>+</Text>
+              <Ionicons name="add" size={27} color="#061A2D" />
             </TouchableOpacity>
           ) : null}
           </CollapseSection>
@@ -800,62 +862,124 @@ export default function S500FormScreen({
           <TouchableOpacity
             onPress={() => showCompletionIssue(false)}
             activeOpacity={0.85}
-            style={{ backgroundColor: '#FFF4E5', borderWidth: 1, borderColor: '#E7B35C', borderRadius: 12, padding: 13, marginBottom: 12 }}
+            style={s500UiStyles.completionNotice}
           >
-            <Text style={{ color: '#8A5612', fontWeight: '900', marginBottom: 3 }}>Form not ready to export</Text>
-            <Text style={{ color: '#704A1D', lineHeight: 19 }}>{completionIssue.message}</Text>
+            <Text style={s500UiStyles.completionNoticeTitle}>Form not ready to export</Text>
+            <Text style={s500UiStyles.completionNoticeText}>{completionIssue.message}</Text>
           </TouchableOpacity>
         ) : null}
 
-        <TouchableOpacity style={styles.saveButton} onPress={saveS500}>
-          <Text style={styles.saveButtonText}>Save Form</Text>
-        </TouchableOpacity>
-
-        <View style={[styles.formActionRow, { marginTop: 10 }]}>
-          <TouchableOpacity
-            style={[styles.exportButton, styles.formActionButton, !formComplete && { backgroundColor: '#768590' }]}
-            onPress={emailValidated}
-          >
-            <Text style={styles.exportButtonText}>{formComplete ? 'Email PDF' : '🔒 Email PDF'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.exportButton, styles.formActionButton, !formComplete && { backgroundColor: '#768590' }]}
-            onPress={exportValidated}
-          >
-            <Text style={styles.exportButtonText}>{formComplete ? 'Export PDF' : '🔒 Export PDF'}</Text>
-          </TouchableOpacity>
-        </View>
+        <FormActionBar
+          onSave={saveS500}
+          onExport={exportValidated}
+          onUpload={uploadValidated}
+          onEmail={emailValidated}
+          uploading={preparingUpload}
+          subtitle="Save locally or send this assessment to SharePoint."
+          variant="dark"
+        />
       </ScrollView>
-    </View>
+      {preparingUpload ? <LoadingOverlay text="Preparing form for SharePoint…" /> : null}
+    </ImageBackground>
   );
 }
 
 const s500UiStyles = StyleSheet.create({
-  hero: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16, overflow: 'hidden' },
-  heroImage: { resizeMode: 'cover', opacity: 0.72 },
-  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(6,26,45,0.69)' },
-  heroTopRow: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  heroButton: { minWidth: 112, minHeight: 40, justifyContent: 'center' },
-  heroButtonRight: { alignItems: 'flex-end' },
-  heroButtonText: { color: '#D6A84F', fontSize: 14, fontWeight: '900' },
-  heroClearText: { color: '#FF9999', fontSize: 14, fontWeight: '900' },
-  heroCode: { color: '#D6A84F', fontSize: 11, fontWeight: '900', letterSpacing: 1.6 },
-  heroTitleRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
-  heroEyebrow: { color: '#D6A84F', fontSize: 9, fontWeight: '900', letterSpacing: 1.4 },
-  heroTitle: { color: '#FFFFFF', fontSize: 23, fontWeight: '900', marginTop: 3, paddingRight: 8 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', borderRadius: 15, paddingHorizontal: 9, paddingVertical: 7, borderWidth: 1 },
+  pageTopoImage: {
+    resizeMode: 'cover',
+    opacity: 0.62,
+  },
+  pageShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(6,26,45,0.78)',
+  },
+  hero: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 15,
+    overflow: 'hidden',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(214,168,79,0.16)',
+  },
+  heroShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(6,26,45,0.22)',
+  },
+  heroTopRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  heroButton: {
+    width: 136,
+    minWidth: 136,
+    height: 44,
+    justifyContent: 'center',
+  },
+  heroButtonRight: {
+    width: 60,
+    minWidth: 60,
+    alignItems: 'flex-end',
+  },
+  heroClearText: { color: '#FF9292', fontSize: 14, fontWeight: '900' },
+  heroCode: { color: '#D6A84F', fontSize: 11, fontWeight: '900', letterSpacing: 1.7 },
+  heroTitleRow: { flexDirection: 'row', alignItems: 'flex-end', marginTop: 7 },
+  heroEyebrow: { color: '#D6A84F', fontSize: 9, fontWeight: '900', letterSpacing: 1.5 },
+  heroTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: '900',
+    marginTop: 3,
+    paddingRight: 8,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderWidth: 1,
+    marginLeft: 8,
+    marginBottom: 2,
+  },
   statusPillComplete: { backgroundColor: 'rgba(36,139,79,0.28)', borderColor: 'rgba(66,200,120,0.72)' },
   statusPillIncomplete: { backgroundColor: 'rgba(170,55,55,0.28)', borderColor: 'rgba(231,88,88,0.72)' },
   statusDot: { width: 7, height: 7, borderRadius: 4, marginRight: 5 },
   statusText: { color: '#FFFFFF', fontSize: 8, fontWeight: '900', letterSpacing: 0.6 },
-  jobBanner: { minHeight: 68, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(9,35,60,0.92)', borderRadius: 13, borderWidth: 1, borderColor: 'rgba(214,168,79,0.55)', paddingHorizontal: 14, paddingVertical: 10, marginTop: 15, overflow: 'hidden' },
+  jobBanner: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(9,35,60,0.94)',
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(214,168,79,0.48)',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    marginTop: 13,
+    overflow: 'hidden',
+  },
   jobRule: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, backgroundColor: '#D6A84F' },
   jobLabel: { color: '#D6A84F', fontSize: 8, fontWeight: '900', letterSpacing: 1.3 },
   jobNumber: { color: '#FFFFFF', fontSize: 17, fontWeight: '900', marginTop: 2 },
   jobName: { color: '#B8C4D0', fontSize: 10, marginTop: 2 },
-  jobLock: { width: 27, height: 27, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(214,168,79,0.15)' },
-  jobLockText: { color: '#D6A84F', fontWeight: '900' },
+  jobLock: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(214,168,79,0.13)',
+    borderWidth: 1,
+    borderColor: 'rgba(214,168,79,0.22)',
+  },
+  scroll: { backgroundColor: 'transparent' },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+  },
   guidedTarget: {
     borderRadius: 14,
     borderWidth: 2,
@@ -864,21 +988,139 @@ const s500UiStyles = StyleSheet.create({
     padding: 5,
     marginHorizontal: -5,
   },
-  setupRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: 4 },
-  wmsRow: { flexDirection: 'row', alignItems: 'stretch', gap: 10, marginBottom: 8 },
-  dateColumn: { width: '38%' },
-  matrixButton: { flex: 1, minHeight: 70, flexDirection: 'row', alignItems: 'center', backgroundColor: '#D6A84F', borderRadius: 13, paddingHorizontal: 12, marginBottom: 14 },
-  matrixIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(6,26,45,0.13)', alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  matrixIconText: { color: '#061A2D', fontSize: 20, fontWeight: '900' },
-  matrixEyebrow: { color: '#5A4317', fontSize: 8, fontWeight: '900', letterSpacing: 0.8 },
-  matrixTitle: { color: '#061A2D', fontSize: 14, fontWeight: '900', marginTop: 2 },
-  matrixArrow: { color: '#061A2D', fontSize: 28, fontWeight: '300' },
-  progressRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#09233C', borderRadius: 13, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', paddingHorizontal: 9, paddingVertical: 11, marginBottom: 16 },
+  setupRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: 2 },
+  dateColumn: { width: '38%', minWidth: 112 },
+  dateFieldWrap: { marginBottom: 14 },
+  controlLabel: {
+    color: '#F4F8FB',
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '800',
+    marginBottom: 7,
+  },
+  dateInput: {
+    minHeight: 56,
+    paddingVertical: 11,
+    paddingHorizontal: 13,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(214,168,79,0.42)',
+    backgroundColor: '#F5F7F8',
+    color: '#061A2D',
+    fontSize: 16,
+  },
+  matrixButton: {
+    flex: 1,
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#D6A84F',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E6C477',
+    paddingHorizontal: 11,
+    marginBottom: 14,
+  },
+  matrixIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: 'rgba(6,26,45,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 9,
+  },
+  matrixCopy: { flex: 1, minWidth: 0 },
+  matrixEyebrow: { color: '#5A4317', fontSize: 8, fontWeight: '900', letterSpacing: 0.9 },
+  matrixTitle: { color: '#061A2D', fontSize: 12, lineHeight: 15, fontWeight: '900', marginTop: 2 },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(9,35,60,0.95)',
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.13)',
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
   progressStep: { flex: 1, alignItems: 'center' },
-  progressDot: { width: 25, height: 25, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: '#263F54', borderWidth: 1, borderColor: '#567084' },
-  progressDotComplete: { backgroundColor: '#D6A84F', borderColor: '#F0CF83' },
+  progressDot: { width: 27, height: 27, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: '#213B51', borderWidth: 1, borderColor: '#526B7E' },
+  progressDotComplete: { backgroundColor: '#2D9655', borderColor: '#64D28D' },
   progressDotText: { color: '#B8C4D0', fontSize: 10, fontWeight: '900' },
-  progressDotTextComplete: { color: '#061A2D' },
-  progressLabel: { color: '#8093A3', fontSize: 7, fontWeight: '900', letterSpacing: 0.5, marginTop: 5 },
-  progressLabelComplete: { color: '#D6A84F' },
+  progressLabel: { color: '#8EA2B2', fontSize: 8, fontWeight: '900', letterSpacing: 0.5, marginTop: 5 },
+  progressLabelComplete: { color: '#8DDEAA' },
+  wmsRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 10,
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.13)',
+    backgroundColor: 'rgba(9,35,60,0.95)',
+  },
+  selectorGroup: { flex: 1 },
+  selectorGroupDisabled: { opacity: 0.46 },
+  selectorRow: { flexDirection: 'row', gap: 7 },
+  selectorButton: {
+    flex: 1,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  selectorButtonSelected: {
+    borderColor: '#42C878',
+    backgroundColor: 'rgba(45,150,85,0.27)',
+  },
+  selectorButtonText: { color: '#B8C4D0', fontWeight: '900', fontSize: 12 },
+  selectorButtonTextSelected: { color: '#9BE7B5' },
+  activityButton: {
+    minHeight: 54,
+    marginBottom: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderColor: 'rgba(214,168,79,0.5)',
+    backgroundColor: 'rgba(9,35,60,0.96)',
+  },
+  activityButtonText: { color: '#F4F8FB', fontSize: 16, fontWeight: '800' },
+  activityList: {
+    borderRadius: 14,
+    borderColor: 'rgba(214,168,79,0.42)',
+    backgroundColor: 'rgba(9,35,60,0.98)',
+    marginBottom: 2,
+  },
+  activityItem: { minHeight: 48, justifyContent: 'center', borderBottomColor: 'rgba(255,255,255,0.1)' },
+  activityItemText: { color: '#F4F8FB', fontSize: 14 },
+  addButton: {
+    alignSelf: 'center',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    marginBottom: 4,
+    backgroundColor: '#D6A84F',
+    borderWidth: 1,
+    borderColor: '#F0CF83',
+  },
+  completionNotice: {
+    backgroundColor: 'rgba(116,73,18,0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(231,179,92,0.72)',
+    borderRadius: 14,
+    padding: 13,
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  completionNoticeTitle: { color: '#FFE1A5', fontWeight: '900', marginBottom: 3 },
+  completionNoticeText: { color: '#F7E8CA', lineHeight: 19 },
 });

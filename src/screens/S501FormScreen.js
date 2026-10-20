@@ -13,19 +13,26 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import AppHeader from '../components/AppHeader';
 import AppSectionHeader from '../components/AppSectionHeader';
 import CurrentJobCard from '../components/CurrentJobCard';
+import FormActionBar from '../components/FormActionBar';
 import LoadingOverlay from '../components/LoadingOverlay';
 import {
   ChoiceRow,
   FormInput,
   FormSection,
-  PrimaryButton,
   useOperationalStyles,
 } from '../components/OperationalFormComponents';
 import { emptyS501 } from '../data/operationalForms';
-import { exportOperationalPdf } from '../export/exportOperationalPdf';
-import { applyProfileDefaults as applyAccountProfileDefaults } from '../features/account/accountProfile';
+import {
+  exportOperationalPdf,
+  prepareOperationalPdf,
+} from '../export/exportOperationalPdf';
+import {
+  applyProfileDefaults as applyAccountProfileDefaults,
+  profileInitials,
+} from '../features/account/accountProfile';
 import { jobStorageKey } from '../features/jobs/jobContext';
 import { useTheme } from '../theme/ThemeContext';
+import { operationalFormForToday, stampOperationalForm } from '../utils/dailyFormReset';
 
 const STORAGE_KEY = 's501_form';
 const today = () => new Date().toLocaleDateString('en-AU');
@@ -35,12 +42,14 @@ export default function S501FormScreen({
   profile,
   activeJob,
   onFormStatusChange,
+  openJobFiles,
   backLabel = 'Forms',
 }) {
   const { colors } = useTheme();
   const styles = useOperationalStyles();
   const [form, setForm] = useState(emptyS501());
   const [exporting, setExporting] = useState(false);
+  const [preparingUpload, setPreparingUpload] = useState(false);
 
   const applyProfileDefaults = (current) => (
     profile
@@ -51,9 +60,12 @@ export default function S501FormScreen({
   useEffect(() => {
     AsyncStorage.getItem(jobStorageKey(STORAGE_KEY, activeJob))
       .then((saved) => {
-        const current = saved
-          ? { ...emptyS501(), ...JSON.parse(saved) }
-          : emptyS501();
+        const parsed = saved ? { ...emptyS501(), ...JSON.parse(saved) } : null;
+        const current = parsed && operationalFormForToday(parsed) ? parsed : emptyS501();
+        if (parsed && !operationalFormForToday(parsed)) {
+          AsyncStorage.removeItem(jobStorageKey(STORAGE_KEY, activeJob));
+          onFormStatusChange?.('s501', 'none');
+        }
         setForm(applyProfileDefaults(current));
       })
       .catch(() => {});
@@ -73,11 +85,13 @@ export default function S501FormScreen({
   };
 
   const save = async () => {
+    const next = stampOperationalForm(applyProfileDefaults(form));
+    setForm(next);
     await AsyncStorage.setItem(
       jobStorageKey(STORAGE_KEY, activeJob),
-      JSON.stringify(form),
+      JSON.stringify(next),
     );
-    await onFormStatusChange?.('s501', 'draft', { date: form.date });
+    await onFormStatusChange?.('s501', 'draft', { date: next.date });
     Alert.alert('S-501 saved', `Saved under job ${activeJob?.number}.`);
   };
 
@@ -104,20 +118,51 @@ export default function S501FormScreen({
   const exportPdf = async () => {
     setExporting(true);
     try {
+      const next = stampOperationalForm(applyProfileDefaults(form));
+      setForm(next);
       await AsyncStorage.setItem(
         jobStorageKey(STORAGE_KEY, activeJob),
-        JSON.stringify(form),
+        JSON.stringify(next),
       );
       const result = await exportOperationalPdf(
-        form,
+        next,
         's501',
         () => setExporting(false),
+        profileInitials(profile),
       );
       if (result?.exported) {
         await onFormStatusChange?.('s501', 'complete', { date: form.date });
       }
     } finally {
       setExporting(false);
+    }
+  };
+
+  const uploadPdf = async () => {
+    if (preparingUpload) return;
+
+    setPreparingUpload(true);
+    try {
+      const next = stampOperationalForm(applyProfileDefaults(form));
+      setForm(next);
+      await AsyncStorage.setItem(
+        jobStorageKey(STORAGE_KEY, activeJob),
+        JSON.stringify(next),
+      );
+      const result = await prepareOperationalPdf(next, 's501', profileInitials(profile));
+      if (!result?.exportUri) return;
+
+      await onFormStatusChange?.('s501', 'complete', { date: form.date });
+      openJobFiles?.({
+        formLabel: 'S-501 Vehicle Pre-Start Checklist',
+        pendingUpload: {
+          uri: result.exportUri,
+          name: result.exportName,
+          mimeType: 'application/pdf',
+        },
+      });
+    } finally {
+      setPreparingUpload(false);
     }
   };
 
@@ -136,6 +181,9 @@ export default function S501FormScreen({
 
       <ScrollView
         contentContainerStyle={styles.content}
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         onScrollBeginDrag={Keyboard.dismiss}
@@ -228,15 +276,14 @@ export default function S501FormScreen({
             onChangeText={(value) => set('completedBy', value)}
             placeholder="Full name"
           />
-          <View style={styles.buttonRow}>
-            <View style={styles.half}>
-              <PrimaryButton label="Save Draft" onPress={save} />
-            </View>
-            <View style={styles.half}>
-              <PrimaryButton label="Clear" danger onPress={clear} />
-            </View>
-          </View>
-          <PrimaryButton label="Export Completed PDF" onPress={exportPdf} />
+          <FormActionBar
+            onSave={save}
+            onClear={clear}
+            onExport={exportPdf}
+            onUpload={uploadPdf}
+            uploading={preparingUpload}
+            subtitle="Keep a draft, export the checklist, or save it to SharePoint."
+          />
         </FormSection>
       </ScrollView>
 
